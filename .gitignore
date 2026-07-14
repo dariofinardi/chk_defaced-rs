@@ -1,0 +1,5 @@
+/target
+/fonts-index.json
+*.tmp
+ocrtest.*
+fonts-index.json
