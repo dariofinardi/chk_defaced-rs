@@ -167,6 +167,91 @@ const COLOUR_EPS: f64 = 0.08; // per-channel closeness for "same colour as its b
 const AVG_ADVANCE: f64 = 0.5; // rough glyph advance in em, for text-width estimation
 const MAX_REGIONS: usize = 4000; // cap the painted-region history (keeps the topmost; bounds cost)
 
+// Searchable-scan (OCR) page signature — a page counts as a scanned+OCR page (its invisible text is the
+// legitimate searchable OCR layer, NOT hidden content) when ALL of:
+//   - images cover >= 70% of the page (a full-page scan, or a collage of image tiles);
+//   - >= 70% of the shown text is invisible (drawn in render mode 3/7);
+//   - that invisible text is regularly distributed — its bounding box spans a large fraction of the page
+//     in both dimensions (an OCR layer covers the whole page, unlike a localized injected block).
+const OCR_IMG_COVER: f64 = 0.70;
+const OCR_INVIS_FRAC: f64 = 0.70;
+const OCR_SPREAD: f64 = 0.50;
+const COVER_GRID: usize = 40; // resolution of the image-coverage occupancy grid (union of image bboxes)
+
+/// Occupancy grid approximating the union area covered by images on a page (robust to overlaps and to a
+/// collage of many image tiles, where summing bbox areas would over- or under-count).
+struct CoverGrid {
+    cells: [bool; COVER_GRID * COVER_GRID],
+}
+impl CoverGrid {
+    fn new() -> Self {
+        CoverGrid { cells: [false; COVER_GRID * COVER_GRID] }
+    }
+    /// Mark the cells covered by a device-space bbox, clipped to the media box.
+    fn mark(&mut self, b: &[f64; 4], media: [f64; 4]) {
+        let mw = (media[2] - media[0]).abs();
+        let mh = (media[3] - media[1]).abs();
+        if mw <= 0.0 || mh <= 0.0 {
+            return;
+        }
+        let fx = |v: f64| (((v - media[0]) / mw).clamp(0.0, 1.0) * COVER_GRID as f64).min((COVER_GRID - 1) as f64) as usize;
+        let fy = |v: f64| (((v - media[1]) / mh).clamp(0.0, 1.0) * COVER_GRID as f64).min((COVER_GRID - 1) as f64) as usize;
+        let (gx0, gx1) = (fx(b[0].min(b[2])), fx(b[0].max(b[2])));
+        let (gy0, gy1) = (fy(b[1].min(b[3])), fy(b[1].max(b[3])));
+        for gy in gy0..=gy1 {
+            for gx in gx0..=gx1 {
+                self.cells[gy * COVER_GRID + gx] = true;
+            }
+        }
+    }
+    fn fraction(&self) -> f64 {
+        self.cells.iter().filter(|&&c| c).count() as f64 / (COVER_GRID * COVER_GRID) as f64
+    }
+}
+
+/// Per-page accumulator for one invisible-text vector: char count, a readable sample, and the bounding
+/// box of the run centres (to measure how spread out the text is across the page).
+#[derive(Default)]
+struct RunBuf {
+    chars: usize,
+    sample: String,
+    bbox: Option<[f64; 4]>,
+}
+impl RunBuf {
+    fn add(&mut self, chars: usize, text: &str, cx: f64, cy: f64) {
+        self.chars += chars;
+        if !text.is_empty() && self.sample.chars().count() < SAMPLE_CAP {
+            if !self.sample.is_empty() {
+                self.sample.push(' ');
+            }
+            self.sample.push_str(text);
+            if self.sample.chars().count() > SAMPLE_CAP {
+                self.sample = self.sample.chars().take(SAMPLE_CAP).collect();
+            }
+        }
+        match &mut self.bbox {
+            None => self.bbox = Some([cx, cy, cx, cy]),
+            Some(b) => {
+                b[0] = b[0].min(cx);
+                b[1] = b[1].min(cy);
+                b[2] = b[2].max(cx);
+                b[3] = b[3].max(cy);
+            }
+        }
+    }
+    /// Fraction of the page (min of the two dimensions) that the run bounding box spans — a proxy for
+    /// "regularly distributed across the page" vs. clustered in one spot.
+    fn spread(&self, media: [f64; 4]) -> f64 {
+        let Some(b) = self.bbox else { return 0.0 };
+        let w = (media[2] - media[0]).abs();
+        let h = (media[3] - media[1]).abs();
+        if w <= 0.0 || h <= 0.0 {
+            return 0.0;
+        }
+        ((b[2] - b[0]) / w).min((b[3] - b[1]) / h)
+    }
+}
+
 /// Transform a point by an affine matrix (row-vector convention).
 fn apply(m: &Mat, x: f64, y: f64) -> (f64, f64) {
     (x * m[0] + y * m[2] + m[4], x * m[1] + y * m[3] + m[5])
@@ -249,6 +334,11 @@ struct Tallies {
     render_mode: Tally,
     tiny: Tally,
     camouflaged: Tally, // text colour ≈ its local background (white-on-white, blue-on-blue, …)
+    // Pages classified as a searchable scan (full-page image + invisible OCR text layer): reported as a
+    // benign Info note, and their invisible render-mode / tiny text is NOT counted as hidden content.
+    ocr_pages: usize,
+    ocr_chars: usize,
+    ocr_sample: String,
 }
 
 fn mat6(operands: &[Object]) -> Option<Mat> {
@@ -276,6 +366,14 @@ fn scan_page(content: &[u8], page: usize, media: [f64; 4], fonts: &HashMap<Vec<u
     let mut regions: Vec<Region> = Vec::new();
     let mut path_rects: Vec<[f64; 4]> = Vec::new(); // device bboxes of `re` rects in the current path
     let mut cur_font: Option<&FontDecode> = None; // current /Font resource, set by `Tf`
+
+    // Per-page accumulators: buffered here and flushed to the global tallies only after classifying the
+    // page (a searchable-scan page's invisible text is the OCR layer, not hidden content).
+    let mut cover = CoverGrid::new();
+    let mut text_total = 0usize;
+    let mut rm_buf = RunBuf::default(); // invisible render mode (3/7)
+    let mut tiny_buf = RunBuf::default(); // sub-visible size
+    let mut camo_buf = RunBuf::default(); // colour ≈ local background
 
     for op in &parsed.operations {
         let a = &op.operands;
@@ -347,13 +445,19 @@ fn scan_page(content: &[u8], page: usize, media: [f64; 4], fonts: &HashMap<Vec<u
                 path_rects.clear();
             }
             "S" | "s" | "n" => path_rects.clear(),
-            // An image / form XObject: an opaque region of unknown colour (skip the colour check over it).
-            "Do" => regions.push(Region { bbox: rect_bbox(&gs.ctm, 0.0, 0.0, 1.0, 1.0), colour: None }),
+            // An image / form XObject: an opaque region of unknown colour (skip the colour check over it),
+            // and a contribution to the page's image coverage (searchable-scan detection).
+            "Do" => {
+                let bbox = rect_bbox(&gs.ctm, 0.0, 0.0, 1.0, 1.0);
+                cover.mark(&bbox, media);
+                regions.push(Region { bbox, colour: None });
+            }
             "Tj" | "TJ" | "'" | "\"" => {
                 let len = shown_len(a);
                 if len == 0 {
                     continue;
                 }
+                text_total += len;
                 let txt = shown_text(a, cur_font);
                 let rm = mat_mul(tm, gs.ctm); // text → device
                 let eff_size = gs.font_size * vscale(&rm);
@@ -376,16 +480,16 @@ fn scan_page(content: &[u8], page: usize, media: [f64; 4], fonts: &HashMap<Vec<u
 
                 // 1) invisible text-render mode (3 = neither fill nor stroke; 7 = clip only).
                 if gs.render_mode == 3 || gs.render_mode == 7 {
-                    t.render_mode.add(page, len, &txt);
+                    rm_buf.add(len, &txt, cx, cy);
                 }
                 // 2) sub-visible size.
                 if eff_size > 0.0 && eff_size < TINY_PT {
-                    t.tiny.add(page, len, &txt);
+                    tiny_buf.add(len, &txt, cx, cy);
                 }
                 // 3) text colour ≈ its actual local background (only when both are known solid colours).
                 if let Some(fill) = gs.fill {
                     if !bg_unknown && colours_close(fill, bg_colour) {
-                        t.camouflaged.add(page, len, &txt);
+                        camo_buf.add(len, &txt, cx, cy);
                     }
                 }
                 // NB: off-page / clipped detection is NOT done deterministically — it needs a complete
@@ -399,6 +503,36 @@ fn scan_page(content: &[u8], page: usize, media: [f64; 4], fonts: &HashMap<Vec<u
         if regions.len() > MAX_REGIONS {
             let drop = regions.len() - MAX_REGIONS;
             regions.drain(0..drop);
+        }
+    }
+
+    // Classify the page: is its invisible render-mode text the legitimate OCR layer of a searchable scan?
+    let inv_frac = if text_total > 0 { rm_buf.chars as f64 / text_total as f64 } else { 0.0 };
+    let is_ocr_scan = rm_buf.chars > 0
+        && cover.fraction() >= OCR_IMG_COVER
+        && inv_frac >= OCR_INVIS_FRAC
+        && rm_buf.spread(media) >= OCR_SPREAD;
+
+    if is_ocr_scan {
+        // The invisible render-mode (and any coincident sub-visible) text IS the OCR layer → benign.
+        t.ocr_pages += 1;
+        t.ocr_chars += rm_buf.chars;
+        if t.ocr_sample.is_empty() {
+            t.ocr_sample = rm_buf.sample.clone();
+        }
+        // Colour-camouflaged text is a distinct deliberate vector, not the OCR mechanism → still reported.
+        if camo_buf.chars > 0 {
+            t.camouflaged.add(page, camo_buf.chars, &camo_buf.sample);
+        }
+    } else {
+        if rm_buf.chars > 0 {
+            t.render_mode.add(page, rm_buf.chars, &rm_buf.sample);
+        }
+        if tiny_buf.chars > 0 {
+            t.tiny.add(page, tiny_buf.chars, &tiny_buf.sample);
+        }
+        if camo_buf.chars > 0 {
+            t.camouflaged.add(page, camo_buf.chars, &camo_buf.sample);
         }
     }
 }
@@ -458,6 +592,23 @@ pub fn pdf_visibility_scan(doc: &Document) -> Vec<Finding> {
     push(&t.tiny, "PDF.TINY_TEXT", 0.6, "drawn below a readable size (sub-visible font)");
     push(&t.render_mode, "PDF.INVISIBLE_RENDER_MODE", 0.5,
          "drawn in an invisible render mode (Tr 3/7). NB: also the legitimate OCR layer of a searchable scan");
+
+    // Searchable-scan pages: the invisible text is the OCR layer by design, not hidden content. Reported
+    // as a benign Info note (so the report explains why there is invisible text), never as a Medium
+    // candidate — this is what keeps a plain scanned+OCR PDF from being flagged as "hidden text".
+    if t.ocr_pages > 0 {
+        out.push(Finding::new(
+            "PDF.OCR_TEXT_LAYER",
+            Severity::Info,
+            Category::Structural,
+            format!("{} page(s)", t.ocr_pages),
+            format!(
+                "searchable scan: a full-page image with an invisible OCR text layer (~{} char(s)) — the text is invisible by design (so the scan is searchable), not hidden content",
+                t.ocr_chars
+            ),
+            0.8,
+        ));
+    }
     out
 }
 
@@ -696,6 +847,39 @@ mod tests {
 
     fn rules_of(content: &[u8]) -> Vec<String> {
         pdf_visibility_scan(&pdf_from_content(content)).into_iter().map(|f| f.rule).collect()
+    }
+
+    /// A searchable scan — a full-page image with an invisible OCR text layer spread across the page —
+    /// must NOT be flagged as hidden text: the invisible render-mode text is the OCR layer (reported only
+    /// as the benign Info note `PDF.OCR_TEXT_LAYER`).
+    #[test]
+    fn pdf_ocr_scan_is_not_flagged_as_hidden() {
+        // Full-page image (unit square scaled to the 612×792 media box) + invisible (Tr 3) OCR text at
+        // opposite corners so its bounding box spans the page. All shown text is invisible.
+        let content = b"\
+q 612 0 0 792 0 0 cm /Im0 Do Q
+BT /F1 10 Tf 3 Tr 1 0 0 1 40 740 Tm (top left recognized words of the scan) Tj ET
+BT /F1 10 Tf 3 Tr 1 0 0 1 360 60 Tm (bottom right recognized words of the scan) Tj ET
+";
+        let rules = rules_of(content);
+        assert!(!rules.contains(&"PDF.INVISIBLE_RENDER_MODE".to_string()),
+            "an OCR scan layer must not be flagged as hidden text; got {rules:?}");
+        assert!(rules.contains(&"PDF.OCR_TEXT_LAYER".to_string()),
+            "an OCR scan should be reported as the benign OCR-layer note; got {rules:?}");
+    }
+
+    /// Invisible text WITHOUT a covering image is not an OCR layer — it stays a hidden-text candidate.
+    #[test]
+    fn pdf_invisible_text_without_image_still_flagged() {
+        let content = b"\
+BT /F1 10 Tf 3 Tr 1 0 0 1 40 740 Tm (invisible injected instructions at the top) Tj ET
+BT /F1 10 Tf 3 Tr 1 0 0 1 360 60 Tm (invisible injected instructions at bottom) Tj ET
+";
+        let rules = rules_of(content);
+        assert!(rules.contains(&"PDF.INVISIBLE_RENDER_MODE".to_string()),
+            "invisible text with no covering image must stay flagged; got {rules:?}");
+        assert!(!rules.contains(&"PDF.OCR_TEXT_LAYER".to_string()),
+            "no image → not an OCR scan; got {rules:?}");
     }
 
     /// Four cloaked runs on a white page (invisible render mode, white-on-white, sub-visible size,

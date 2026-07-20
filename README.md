@@ -164,6 +164,7 @@ chk_defaced scan vertrag.pdf  --ocr --ocr-lang deu+eng
 | **Invisible / cloaked text** — [details](#invisible--cloaked-text-prompt-injection-vector) | | |
 | `DOCX.INVISIBLE_TEXT_COLOR` / `DOCX.TINY_TEXT` | High | A near-white (guarded by `w:shd`/`w:highlight`) or sub-visible (< 4 pt) run — the finding **quotes the injected text**. |
 | `PDF.INVISIBLE_TEXT_COLOR` / `PDF.TINY_TEXT` / `PDF.INVISIBLE_RENDER_MODE` | Medium (candidate) | Painter-model signals: text ≈ its local background, sub-visible size (< 1.5 pt), or invisible render mode (`Tr 3/7`) — confirmed to High by `--ocr`. |
+| `PDF.OCR_TEXT_LAYER` | Info | **Searchable scan, not hidden content.** A page whose images cover ≥ 70 % of it and whose text is ≥ 70 % invisible *and* spread across the page is a scanned page with an invisible OCR text layer — invisible **by design** so the scan is searchable. Its invisible render-mode text is reclassified from `PDF.INVISIBLE_RENDER_MODE` to this benign note, so a plain scanned+OCR PDF is not flagged as hiding text. |
 | `PDF.HIDDEN_TEXT_CONFIRMED` / `DOCX.HIDDEN_TEXT_CONFIRMED` | High | `--ocr` render confirms words present in the extract but **absent from the render** — and **lists the recovered hidden words**. |
 | `DOCX.HIDDEN_VANISH` | Medium | `w:vanish` runs: text present in the extract but not visible. |
 | `DOCX.FONT_UNREADABLE` | Low | An obfuscated `.odttf` embedded font that could not be de-obfuscated/parsed. |
