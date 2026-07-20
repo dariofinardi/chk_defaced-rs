@@ -1,6 +1,6 @@
 [package]
 name = "chk_defaced"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Dario Finardi <df@dariofinardi.it>"]
 description = "Detect 'defaced' documents: verify the coherence of the fonts used to render text (PDF, DOCX, HTML+CSS) and build a JSON index of the system fonts' cmaps."

@@ -66,6 +66,37 @@ fn shown_len(operands: &[Object]) -> usize {
     n
 }
 
+/// Best-effort readable preview of a shown-text operand (`Tj`/`TJ`/`'`/`"`): for simple fonts with a
+/// standard encoding the content-stream bytes ARE (or closely mirror) the extracted text, so a printable-byte
+/// projection lets the finding QUOTE what is hidden instead of only counting it. Non-printable bytes
+/// (CID/hex-packed strings) are dropped — worst case the sample is empty and the message omits it.
+fn shown_text(operands: &[Object]) -> String {
+    fn push_bytes(bytes: &[u8], out: &mut String) {
+        for &b in bytes {
+            match b {
+                0x20..=0x7E => out.push(b as char),
+                0xA0..=0xFF => out.push(b as char), // Latin-1 supplement (accents in WinAnsi/Standard)
+                _ => {}
+            }
+        }
+    }
+    let mut s = String::new();
+    for op in operands {
+        match op {
+            Object::String(bytes, _) => push_bytes(bytes, &mut s),
+            Object::Array(arr) => {
+                for a in arr {
+                    if let Object::String(bytes, _) = a {
+                        push_bytes(bytes, &mut s);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
 /// Relative luminance of an RGB triple in 0..=1.
 fn luma(rgb: [f64; 3]) -> f64 {
     0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
@@ -125,18 +156,32 @@ struct Region {
     colour: Option<[f64; 3]>,
 }
 
-/// Per-category running tally of hidden text (byte count + a page sample).
+/// Cap for the quoted sample of hidden text carried by a finding (chars, post-cleaning).
+const SAMPLE_CAP: usize = 200;
+
+/// Per-category running tally of hidden text: byte count, first page, and a capped readable sample of
+/// the hidden runs — so the finding can QUOTE what is hidden, not just count it.
 #[derive(Default)]
 struct Tally {
     chars: usize,
     page: usize,
+    sample: String,
 }
 impl Tally {
-    fn add(&mut self, page: usize, chars: usize) {
+    fn add(&mut self, page: usize, chars: usize, text: &str) {
         if self.chars == 0 {
             self.page = page;
         }
         self.chars += chars;
+        if !text.is_empty() && self.sample.chars().count() < SAMPLE_CAP {
+            if !self.sample.is_empty() {
+                self.sample.push(' ');
+            }
+            self.sample.push_str(text);
+            if self.sample.chars().count() > SAMPLE_CAP {
+                self.sample = self.sample.chars().take(SAMPLE_CAP).collect();
+            }
+        }
     }
 }
 
@@ -246,6 +291,7 @@ fn scan_page(content: &[u8], page: usize, media: [f64; 4], t: &mut Tallies) {
                 if len == 0 {
                     continue;
                 }
+                let txt = shown_text(a);
                 let rm = mat_mul(tm, gs.ctm); // text → device
                 let eff_size = gs.font_size * vscale(&rm);
                 let (ox, oy) = (rm[4], rm[5]); // baseline origin on the page
@@ -267,16 +313,16 @@ fn scan_page(content: &[u8], page: usize, media: [f64; 4], t: &mut Tallies) {
 
                 // 1) invisible text-render mode (3 = neither fill nor stroke; 7 = clip only).
                 if gs.render_mode == 3 || gs.render_mode == 7 {
-                    t.render_mode.add(page, len);
+                    t.render_mode.add(page, len, &txt);
                 }
                 // 2) sub-visible size.
                 if eff_size > 0.0 && eff_size < TINY_PT {
-                    t.tiny.add(page, len);
+                    t.tiny.add(page, len, &txt);
                 }
                 // 3) text colour ≈ its actual local background (only when both are known solid colours).
-                if let Some(txt) = gs.fill {
-                    if !bg_unknown && colours_close(txt, bg_colour) {
-                        t.camouflaged.add(page, len);
+                if let Some(fill) = gs.fill {
+                    if !bg_unknown && colours_close(fill, bg_colour) {
+                        t.camouflaged.add(page, len, &txt);
                     }
                 }
                 // NB: off-page / clipped detection is NOT done deterministically — it needs a complete
@@ -325,12 +371,20 @@ pub fn pdf_visibility_scan(doc: &Document) -> Vec<Finding> {
     let mut out = Vec::new();
     let mut push = |tally: &Tally, rule: &str, conf: f32, what: &str| {
         if tally.chars >= MIN_CHARS {
+            // Quote the hidden text itself (best-effort readable sample) — a consumer
+            // must be able to SEE what is hidden, not just learn that something is.
+            let quoted = crate::finding::clean_snippet(&tally.sample, SAMPLE_CAP);
+            let example = if quoted.is_empty() {
+                String::new()
+            } else {
+                format!(" — e.g. \"{quoted}\"")
+            };
             out.push(Finding::new(
                 rule,
                 Severity::Medium,
                 Category::HiddenContent,
                 format!("page {}", tally.page),
-                format!("extracted but not visible (candidate — confirm with render-OCR): ~{} char(s) {what}", tally.chars),
+                format!("extracted but not visible (candidate — confirm with render-OCR): ~{} char(s) {what}{example}", tally.chars),
                 conf,
             ));
         }
@@ -596,6 +650,40 @@ BT /F1 12 Tf 0 0 0 rg 1 0 0 1 72 600 Tm (normal visible contract text on the pag
         for r in ["PDF.INVISIBLE_RENDER_MODE", "PDF.INVISIBLE_TEXT_COLOR", "PDF.TINY_TEXT"] {
             assert!(rules.contains(&r.to_string()), "missing {r}; got {rules:?}");
         }
+    }
+
+    /// The PDF visibility findings must QUOTE the hidden text (best-effort sample), like the DOCX ones:
+    /// a consumer has to see WHAT is hidden, not just that something is.
+    #[test]
+    fn pdf_findings_quote_the_hidden_text() {
+        let content = b"\
+BT /F1 12 Tf 3 Tr 1 0 0 1 72 700 Tm (invisible render mode injected instructions) Tj ET
+BT /F1 12 Tf 1 1 1 rg 0 Tr 1 0 0 1 72 680 Tm (white on white injected payload here) Tj ET
+BT /F1 1 Tf 0 0 0 rg 1 0 0 1 72 660 Tm (tiny microscopic hidden injected text now) Tj ET
+";
+        let mut t = Tallies::default();
+        scan_page(content, 1, [0.0, 0.0, 612.0, 792.0], &mut t);
+        let findings = {
+            let mut out = Vec::new();
+            let mut push = |tally: &Tally, rule: &str| {
+                if tally.chars >= MIN_CHARS {
+                    out.push((rule.to_string(), tally.sample.clone()));
+                }
+            };
+            push(&t.camouflaged, "PDF.INVISIBLE_TEXT_COLOR");
+            push(&t.render_mode, "PDF.INVISIBLE_RENDER_MODE");
+            push(&t.tiny, "PDF.TINY_TEXT");
+            out
+        };
+        let get = |rule: &str| {
+            findings.iter().find(|(r, _)| r == rule).map(|(_, s)| s.clone()).unwrap_or_default()
+        };
+        assert!(get("PDF.INVISIBLE_TEXT_COLOR").contains("white on white injected payload"),
+            "camouflaged sample should quote the hidden text; got: {}", get("PDF.INVISIBLE_TEXT_COLOR"));
+        assert!(get("PDF.INVISIBLE_RENDER_MODE").contains("invisible render mode injected"),
+            "render-mode sample should quote the hidden text; got: {}", get("PDF.INVISIBLE_RENDER_MODE"));
+        assert!(get("PDF.TINY_TEXT").contains("tiny microscopic hidden injected"),
+            "tiny sample should quote the hidden text; got: {}", get("PDF.TINY_TEXT"));
     }
 
     /// The painter model must judge text against its *actual local background*: white text on a coloured
