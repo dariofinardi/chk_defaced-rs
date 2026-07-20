@@ -11,6 +11,8 @@
 //! layer of a searchable-scanned PDF) is reported at `Medium` with an explicit caveat, to be confirmed
 //! by the render-OCR pass, not asserted as tampering on its own.
 
+use std::collections::HashMap;
+
 use lopdf::content::Content;
 use lopdf::{Document, Object};
 
@@ -66,28 +68,68 @@ fn shown_len(operands: &[Object]) -> usize {
     n
 }
 
-/// Best-effort readable preview of a shown-text operand (`Tj`/`TJ`/`'`/`"`): for simple fonts with a
-/// standard encoding the content-stream bytes ARE (or closely mirror) the extracted text, so a printable-byte
-/// projection lets the finding QUOTE what is hidden instead of only counting it. Non-printable bytes
-/// (CID/hex-packed strings) are dropped — worst case the sample is empty and the message omits it.
-fn shown_text(operands: &[Object]) -> String {
-    fn push_bytes(bytes: &[u8], out: &mut String) {
-        for &b in bytes {
-            match b {
-                0x20..=0x7E => out.push(b as char),
-                0xA0..=0xFF => out.push(b as char), // Latin-1 supplement (accents in WinAnsi/Standard)
-                _ => {}
+/// How to turn a shown-text operand's raw bytes into the **extracted** characters (what a RAG/LLM reads)
+/// for a given font. Built from the page's font resources: a `ToUnicode` map (code → char) plus the code
+/// width — 2 bytes for Type0/CID fonts (Identity-H), 1 byte for simple fonts. When a font has no
+/// `ToUnicode`, `map` is empty and decoding falls back to a printable-byte projection (correct for the
+/// common simple-font-with-standard-encoding case; harmless mojibake is dropped, not shown).
+struct FontDecode {
+    two_byte: bool,
+    map: HashMap<u32, char>,
+}
+
+impl FontDecode {
+    fn decode(&self, bytes: &[u8], out: &mut String) {
+        if self.map.is_empty() {
+            // No ToUnicode: for a simple font the byte IS ~the character (WinAnsi/Latin-1).
+            push_printable(bytes, out);
+            return;
+        }
+        if self.two_byte {
+            for ch in bytes.chunks_exact(2) {
+                let code = u32::from(u16::from_be_bytes([ch[0], ch[1]]));
+                if let Some(&c) = self.map.get(&code) {
+                    out.push(c);
+                }
+            }
+        } else {
+            for &b in bytes {
+                if let Some(&c) = self.map.get(&(b as u32)) {
+                    out.push(c);
+                }
             }
         }
     }
+}
+
+/// Printable-byte projection used when a font carries no `ToUnicode` map (simple fonts with a standard
+/// encoding: the content-stream byte closely mirrors the extracted character). Non-printable bytes are
+/// dropped — worst case the sample is empty and the finding message simply omits the quote.
+fn push_printable(bytes: &[u8], out: &mut String) {
+    for &b in bytes {
+        match b {
+            0x20..=0x7E => out.push(b as char),
+            0xA0..=0xFF => out.push(b as char), // Latin-1 supplement (accents in WinAnsi/Standard)
+            _ => {}
+        }
+    }
+}
+
+/// Decode a shown-text operand (`Tj`/`TJ`/`'`/`"`) to the extracted text via the current font's decoder
+/// (the array form of `TJ` interleaves kerning numbers between strings — those are ignored).
+fn shown_text(operands: &[Object], font: Option<&FontDecode>) -> String {
     let mut s = String::new();
+    let mut emit = |bytes: &[u8], s: &mut String| match font {
+        Some(f) => f.decode(bytes, s),
+        None => push_printable(bytes, s),
+    };
     for op in operands {
         match op {
-            Object::String(bytes, _) => push_bytes(bytes, &mut s),
+            Object::String(bytes, _) => emit(bytes, &mut s),
             Object::Array(arr) => {
                 for a in arr {
                     if let Object::String(bytes, _) = a {
-                        push_bytes(bytes, &mut s);
+                        emit(bytes, &mut s);
                     }
                 }
             }
@@ -95,6 +137,23 @@ fn shown_text(operands: &[Object]) -> String {
         }
     }
     s
+}
+
+/// Build the per-font decoders for a page from its font resources: `resource name → FontDecode`.
+fn page_font_decoders(doc: &Document, page_id: lopdf::ObjectId) -> HashMap<Vec<u8>, FontDecode> {
+    let mut out = HashMap::new();
+    if let Ok(fonts) = doc.get_page_fonts(page_id) {
+        for (name, fontdict) in fonts {
+            out.insert(
+                name,
+                FontDecode {
+                    two_byte: crate::pdf_glyph::is_type0(doc, fontdict),
+                    map: crate::pdf_glyph::parse_tounicode(doc, fontdict),
+                },
+            );
+        }
+    }
+    out
 }
 
 /// Relative luminance of an RGB triple in 0..=1.
@@ -208,7 +267,7 @@ fn mat6(operands: &[Object]) -> Option<Mat> {
 /// and the clip box — then judge each shown text run against its *actual local background*, its effective
 /// size, its render mode and its position/clip. This is what makes the colour check precise (white-on-
 /// coloured headers are visible → not flagged; white-on-white and blue-on-blue camouflage are).
-fn scan_page(content: &[u8], page: usize, media: [f64; 4], t: &mut Tallies) {
+fn scan_page(content: &[u8], page: usize, media: [f64; 4], fonts: &HashMap<Vec<u8>, FontDecode>, t: &mut Tallies) {
     let Ok(parsed) = Content::decode(content) else { return };
     let page_area = bbox_area(&media);
     let mut gs = GState { ctm: IDENTITY, font_size: 0.0, render_mode: 0, fill: Some([0.0, 0.0, 0.0]) };
@@ -216,6 +275,7 @@ fn scan_page(content: &[u8], page: usize, media: [f64; 4], t: &mut Tallies) {
     let mut tm = IDENTITY;
     let mut regions: Vec<Region> = Vec::new();
     let mut path_rects: Vec<[f64; 4]> = Vec::new(); // device bboxes of `re` rects in the current path
+    let mut cur_font: Option<&FontDecode> = None; // current /Font resource, set by `Tf`
 
     for op in &parsed.operations {
         let a = &op.operands;
@@ -233,6 +293,9 @@ fn scan_page(content: &[u8], page: usize, media: [f64; 4], t: &mut Tallies) {
             }
             "BT" => tm = IDENTITY,
             "Tf" => {
+                if let Some(Object::Name(fname)) = a.first() {
+                    cur_font = fonts.get(fname.as_slice());
+                }
                 if let Some(sz) = a.get(1).and_then(num) {
                     gs.font_size = sz;
                 }
@@ -291,7 +354,7 @@ fn scan_page(content: &[u8], page: usize, media: [f64; 4], t: &mut Tallies) {
                 if len == 0 {
                     continue;
                 }
-                let txt = shown_text(a);
+                let txt = shown_text(a, cur_font);
                 let rm = mat_mul(tm, gs.ctm); // text → device
                 let eff_size = gs.font_size * vscale(&rm);
                 let (ox, oy) = (rm[4], rm[5]); // baseline origin on the page
@@ -364,7 +427,8 @@ pub fn pdf_visibility_scan(doc: &Document) -> Vec<Finding> {
     for (page_no, (_num, page_id)) in doc.get_pages().into_iter().enumerate() {
         if let Ok(content) = doc.get_page_content(page_id) {
             let media = media_box(doc, page_id);
-            scan_page(&content, page_no + 1, media, &mut t);
+            let fonts = page_font_decoders(doc, page_id);
+            scan_page(&content, page_no + 1, media, &fonts, &mut t);
         }
     }
 
@@ -661,8 +725,10 @@ BT /F1 12 Tf 3 Tr 1 0 0 1 72 700 Tm (invisible render mode injected instructions
 BT /F1 12 Tf 1 1 1 rg 0 Tr 1 0 0 1 72 680 Tm (white on white injected payload here) Tj ET
 BT /F1 1 Tf 0 0 0 rg 1 0 0 1 72 660 Tm (tiny microscopic hidden injected text now) Tj ET
 ";
+        // No ToUnicode in this synthetic stream → the decoder falls back to the printable-byte
+        // projection, which for these ASCII operands recovers the text verbatim.
         let mut t = Tallies::default();
-        scan_page(content, 1, [0.0, 0.0, 612.0, 792.0], &mut t);
+        scan_page(content, 1, [0.0, 0.0, 612.0, 792.0], &HashMap::new(), &mut t);
         let findings = {
             let mut out = Vec::new();
             let mut push = |tally: &Tally, rule: &str| {

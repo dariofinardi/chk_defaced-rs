@@ -96,7 +96,7 @@ impl CidGid {
 /// content-stream code map to a glyph id via Identity-H + `CIDToGIDMap`; a *simple* font routes code →
 /// glyph through `/Encoding`, so its `ToUnicode` codes are **not** glyph ids and must not be hashed as
 /// such (doing so manufactured spurious cross-reference collisions on real subset fonts).
-fn is_type0(doc: &Document, fontdict: &Dictionary) -> bool {
+pub(crate) fn is_type0(doc: &Document, fontdict: &Dictionary) -> bool {
     matches!(dget(doc, fontdict, b"DescendantFonts"), Some(Object::Array(_)))
 }
 
@@ -117,7 +117,7 @@ fn cid_to_gid(doc: &Document, fontdict: &Dictionary) -> CidGid {
 }
 
 /// Parse `ToUnicode` into code → character (bfchar `<code> <utf16be>` and bfrange `<lo> <hi> <start>`).
-fn parse_tounicode(doc: &Document, fontdict: &Dictionary) -> HashMap<u32, char> {
+pub(crate) fn parse_tounicode(doc: &Document, fontdict: &Dictionary) -> HashMap<u32, char> {
     let mut map = HashMap::new();
     let Some(Object::Stream(s)) = dget(doc, fontdict, b"ToUnicode") else { return map };
     let Ok(content) = s.decompressed_content() else { return map };
