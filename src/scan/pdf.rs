@@ -234,7 +234,10 @@ pub fn scan(path: &Path, registry: Option<&FontRegistry>) -> Result<Report> {
     {
         let outline = crate::pdf_glyph::pdf_outline_scan_doc(&doc);
         let mut subs = outline.substitutions;
-        if !outline.findings.is_empty() {
+        // Gate on the substitution map, not on findings: a suppressed uniform-shift artifact returns an
+        // Info note with NO substitutions, and must not set the Unconfirmed verdict or run the registry
+        // check — the document is not defaced.
+        if !subs.is_empty() {
             // Collision found: unconfirmed until verified.
             report.verdict = Some(crate::finding::Verdict::Unconfirmed);
             // Step 1 — deterministic canonical check (registry): if a registry-known font's glyph draws

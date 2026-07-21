@@ -247,6 +247,30 @@ pub fn pdf_outline_scan(path: &Path) -> Result<OutlineScan> {
 }
 
 /// [`pdf_outline_scan`] on an already-loaded document (avoids re-parsing the PDF).
+/// Detect a uniform alphabetic shift in a recovered substitution map (`(extracted, drawn)` pairs). Returns
+/// `Some(shift)` when a single nonzero shift `drawn - extracted` accounts for at least `MIN_SHIFT_LETTERS`
+/// ascii-letter pairs AND at least `SHIFT_DOMINANCE` of all ascii-letter pairs — the signature of a
+/// font-encoding artifact rather than a targeted replacement. See the call site for rationale.
+fn uniform_shift(subs: &[(char, char)]) -> Option<i32> {
+    const MIN_SHIFT_LETTERS: usize = 8;
+    const SHIFT_DOMINANCE: f64 = 0.8;
+    let mut counts: HashMap<i32, usize> = HashMap::new();
+    let mut total = 0usize;
+    for &(lie, truth) in subs {
+        if lie.is_ascii_alphabetic() && truth.is_ascii_alphabetic() {
+            let shift = truth.to_ascii_lowercase() as i32 - lie.to_ascii_lowercase() as i32;
+            *counts.entry(shift).or_default() += 1;
+            total += 1;
+        }
+    }
+    let (&shift, &n) = counts.iter().max_by_key(|(_, n)| **n)?;
+    if shift != 0 && n >= MIN_SHIFT_LETTERS && n as f64 >= SHIFT_DOMINANCE * total as f64 {
+        Some(shift)
+    } else {
+        None
+    }
+}
+
 pub fn pdf_outline_scan_doc(doc: &Document) -> OutlineScan {
     let mut sigs: HashMap<u64, HashMap<char, usize>> = HashMap::new();
 
@@ -319,6 +343,29 @@ pub fn pdf_outline_scan_doc(doc: &Document) -> OutlineScan {
     let mut substitutions: Vec<(char, char)> = best.into_iter().map(|(lie, (truth, _))| (lie, truth)).collect();
     substitutions.sort_unstable();
 
+    // A recovered map that is a single UNIFORM alphabetic shift over many letters (every extracted letter
+    // draws the one N positions away) is a FONT-ENCODING / SUBSETTING ARTIFACT (typical of LaTeX papers),
+    // NOT a targeted A3 attack: a real replacement is surgical — a few letters that turn one plausible
+    // word into another — never a global Caesar shift, which would garble every visible word. Suppress the
+    // High collision findings and the substitution map, emit one benign Info note instead. Deterministic
+    // and O(n): no OCR, no rendering.
+    if let Some(shift) = uniform_shift(&substitutions) {
+        let n = substitutions.len();
+        return OutlineScan {
+            findings: vec![Finding::new(
+                "PDF.FONT_ENCODING_ARTIFACT",
+                Severity::Info,
+                Category::Structural,
+                "embedded fonts",
+                format!(
+                    "uniform alphabetic shift ({shift:+}) across {n} letters — a font-encoding/subsetting artifact (e.g. LaTeX), not a targeted replacement: the extracted text matches what is rendered"
+                ),
+                0.85,
+            )],
+            substitutions: Vec::new(),
+        };
+    }
+
     let mut findings: Vec<Finding> = lies
         .into_iter()
         .map(|((truth, lie), n)| {
@@ -340,7 +387,7 @@ pub fn pdf_outline_scan_doc(doc: &Document) -> OutlineScan {
 
 #[cfg(test)]
 mod tests {
-    use super::CidGid;
+    use super::{uniform_shift, CidGid};
 
     #[test]
     fn cidgid_identity_is_code() {
@@ -348,6 +395,30 @@ mod tests {
         assert_eq!(m.gid(65), Some(65));
         assert_eq!(m.gid(0), Some(0));
         assert_eq!(m.gid(70_000), None); // beyond u16
+    }
+
+    #[test]
+    fn uniform_shift_is_detected_as_artifact() {
+        // The ROPOLL case: every extracted letter draws the one 2 positions earlier (c→a, d→b, …).
+        let subs: Vec<(char, char)> = "cdfgijklmnopqrstuwxz"
+            .chars()
+            .map(|c| (c, ((c as u8) - 2) as char))
+            .collect();
+        assert_eq!(uniform_shift(&subs), Some(-2));
+    }
+
+    #[test]
+    fn surgical_replacement_is_not_a_uniform_shift() {
+        // A real, targeted swap (a handful of unrelated pairs) is not a uniform shift → stays flagged.
+        let subs = vec![('a', 'o'), ('e', 'a'), ('r', 'n')];
+        assert_eq!(uniform_shift(&subs), None);
+    }
+
+    #[test]
+    fn identity_shift_is_not_flagged() {
+        // Same letter mapped to itself is shift 0 (not an artifact signal).
+        let subs: Vec<(char, char)> = ('a'..='m').map(|c| (c, c)).collect();
+        assert_eq!(uniform_shift(&subs), None);
     }
 
     #[test]
