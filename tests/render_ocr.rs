@@ -11,7 +11,7 @@
 //! absent, so it is inert in a plain CI without the native stack.
 //!
 //! Provide the fixture via `CHK_DEFACED_TAMPERED_DOCX` (absolute path); otherwise it looks for
-//! `../defaced-test/replaced.docx` next to the crate. Tessdata is discovered from `TESSDATA_PREFIX` or the
+//! `../data/attack-fixtures/replaced.docx` next to the crate. Tessdata is discovered from `TESSDATA_PREFIX` or the
 //! per-arch `…/tesseract-rs/<arch>/<mode>/tessdata` cache.
 
 #![cfg(all(feature = "render-wry", feature = "ocr-tesseract"))]
@@ -41,7 +41,7 @@ fn find_fixture() -> Option<PathBuf> {
         return pb.is_file().then_some(pb);
     }
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let guess = here.join("../defaced-test/replaced.docx");
+    let guess = here.join("../data/attack-fixtures/replaced.docx");
     guess.is_file().then_some(guess)
 }
 
@@ -96,7 +96,7 @@ fn docx_render_ocr_confirms_positional_substitution() {
 #[test]
 fn docx_render_ocr_confirms_hidden_text() {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let docx = here.join("../defaced-test/hidden-text.docx");
+    let docx = here.join("../data/attack-fixtures/hidden-text.docx");
     if !docx.is_file() {
         eprintln!("skip: hidden-text.docx fixture absent");
         return;

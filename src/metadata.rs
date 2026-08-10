@@ -214,9 +214,9 @@ mod tests {
         use std::path::PathBuf;
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         for rel in [
-            "corpus/clean/us/education/arxiv_1706.03762_attention.pdf",
-            "corpus/clean/misc/docx/calibre_demo.docx",
-            "defaced-test/replaced.docx",
+            "data/fp-corpus/clean/us/education/arxiv_1706.03762_attention.pdf",
+            "data/fp-corpus/clean/misc/docx/calibre_demo.docx",
+            "data/attack-fixtures/replaced.docx",
         ] {
             let p = base.join(rel);
             if !p.exists() {

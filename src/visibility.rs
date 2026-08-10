@@ -966,7 +966,7 @@ BT /F1 12 Tf 0 0 1 rg 1 0 0 1 72 655 Tm (blue on blue injected hidden clause) Tj
     #[test]
     fn scan_path_flags_hidden_text_fixtures() {
         use std::path::PathBuf;
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../defaced-test");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../data/attack-fixtures");
         for (file, want_prefix) in [("hidden-text.pdf", "PDF."), ("hidden-text.docx", "DOCX.")] {
             let path = base.join(file);
             if !path.exists() {
@@ -993,7 +993,7 @@ BT /F1 12 Tf 0 0 1 rg 1 0 0 1 72 655 Tm (blue on blue injected hidden clause) Tj
     #[test]
     fn page_and_suspect_text_on_fixtures() {
         use std::path::PathBuf;
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../defaced-test");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../data/attack-fixtures");
 
         let pdf = base.join("replaced.pdf");
         if pdf.exists() {
@@ -1028,7 +1028,7 @@ BT /F1 12 Tf 0 0 1 rg 1 0 0 1 72 655 Tm (blue on blue injected hidden clause) Tj
     fn clean_corpus_no_visibility_false_positives() {
         use crate::finding::{Category, Severity};
         use std::path::PathBuf;
-        let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corpus");
+        let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../data/fp-corpus");
         if !corpus.exists() {
             eprintln!("skip: corpus absent");
             return;
