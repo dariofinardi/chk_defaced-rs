@@ -434,6 +434,65 @@ verifies magic bytes + SHA-256, writes `corpus/manifest.csv`). Sources are gover
 research, official gazettes and published corporate reports. (Note: EUR-Lex blocks scripted download —
 the EU legal entries use the European Parliament Charter endpoint and national gazettes instead.)
 
+## Field reports (downstream corpora)
+
+Cases observed by a downstream consumer — `pdf-extractor-2-md`, same author — on a 16-document
+Italian corpus that does **not** overlap the 32-document evaluation corpus above. Both are
+**candidate** defects, reported with the evidence that raised them rather than as confirmed bugs,
+because they were seen from outside the crate.
+
+### 1. Three `GLYPH_SEMANTIC_REPLACEMENT`, one occurrence each, on a clean document
+
+A 126-page Italian slide deck, 28 embedded fonts, no reason to suspect it:
+
+```
+[High] PDF.GLYPH_SEMANTIC_REPLACEMENT — glyph drawing 'j' mapped from extracted 'h' (1×)
+[High] PDF.GLYPH_SEMANTIC_REPLACEMENT — glyph drawing 'k' mapped from extracted 'ü' (1×)
+[High] PDF.GLYPH_SEMANTIC_REPLACEMENT — glyph drawing 'l' mapped from extracted 'þ' (1×)
+```
+
+Downstream consequence: the consumer routes every affected page to OCR, so **14 pages of a clean
+document** stop being read as exact text. That is the correct reaction to a `High` finding — which
+is why the finding itself is worth a second look.
+
+Three things suggest a subset-font artefact rather than an attack:
+
+- **one occurrence each**, in 126 pages. Semantic replacement is done to change what a reader takes
+  away, and that needs it applied *systematically*; a single glyph changes nothing;
+- the extracted characters are **outside the document's repertoire**. `þ` (thorn) is Icelandic and
+  does not occur in Italian; `ü` is marginal. An attacker picks source characters the document
+  actually contains, or the substitution never fires;
+- the three targets `j`, `k`, `l` are **adjacent**, which is what a shifted glyph-id range in a
+  subset font looks like.
+
+Possible direction, if it survives checking: weigh a semantic replacement by **how many times it
+fires**, and by whether the extracted character belongs to the document's script/language
+repertoire — rather than lowering the severity of the rule as such. The measurable test is one this
+crate already has: `ocr-specimen` on that font either confirms the mapping or refutes it.
+
+### 2. `INVISIBLE_TEXT_COLOR` on a title over a full-bleed image
+
+Same document, page 1 — a cover slide whose background is **11 images covering 100% of the page**:
+
+```
+[Medium] PDF.INVISIBLE_TEXT_COLOR — ~1077 char(s) drawn in ~the same colour as its local
+background (camouflaged) — e.g. "Þ ’ =UTO=NTÞÞ=GNTÞ C OMMRC=Þ=ST Opn=(ntrprs/P=) …" (page 1)
+```
+
+The flagged run is the slide's **visible title**, read through the broken mapping of case 1:
+`=UTO=NTÞÞ=GNTÞ` is *L'AIUTO INTELLIGENTE* and `C OMMRC=Þ=ST` is *COMMERCIALISTA*. A human sees
+that title perfectly well — it is white type over a dark photograph.
+
+Hypothesis: the painter model records images as z-ordered backgrounds, but an image has no single
+colour, so a light run over a dark photograph ends up judged against something that is not what is
+under it. Where an image is the top-most thing beneath a run, sampling the pixels under the run's
+bounding box — or declining to judge, which costs a missed candidate rather than a false one —
+would both be safer than treating it as a flat fill.
+
+The two cases probably share one cause: a subset font whose `ToUnicode` is broken, which makes the
+extraction garbled (case 1) *and* supplies the garbled sample quoted in case 2. If that holds,
+closing the first closes the second.
+
 ## Background & references
 
 `chk_defaced` is the detection tool for the **"Noroboto"** attack family — documents whose fonts make
