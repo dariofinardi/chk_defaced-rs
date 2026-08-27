@@ -366,6 +366,26 @@ pub fn pdf_outline_scan_doc(doc: &Document) -> OutlineScan {
         };
     }
 
+    // Seconda firma d'artefatto, complementare allo shift uniforme: la finestra di subset con
+    // ToUnicode sfasato (poche coppie rarissime che disegnano lettere contigue).
+    let pairs: Vec<(char, char, usize)> = substitutions
+        .iter()
+        .map(|&(lie, truth)| (lie, truth, lies.get(&(truth, lie)).copied().unwrap_or(0)))
+        .collect();
+    if let Some(reason) = crate::glyphmatch::subsetting_window(&pairs) {
+        return OutlineScan {
+            findings: vec![Finding::new(
+                "PDF.FONT_SUBSET_WINDOW_ARTIFACT",
+                Severity::Info,
+                Category::Structural,
+                "embedded fonts",
+                reason,
+                0.8,
+            )],
+            substitutions: Vec::new(),
+        };
+    }
+
     let mut findings: Vec<Finding> = lies
         .into_iter()
         .map(|((truth, lie), n)| {

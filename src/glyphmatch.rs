@@ -96,3 +96,111 @@ mod tests {
         assert!(!legitimately_identical_ci('M', 'D'));
     }
 }
+
+/// Numero minimo di coppie perché la finestra di subset sia riconoscibile come tale.
+const WINDOW_MIN_PAIRS: usize = 3;
+/// Quante volte una coppia può scattare restando compatibile con un artefatto.
+///
+/// Una sostituzione semantica deve essere **sistematica** per cambiare ciò che un lettore capisce:
+/// tre coppie che scattano una volta ciascuna in 126 pagine non spostano il senso di nulla.
+const WINDOW_MAX_OCCURRENCES: usize = 2;
+
+/// Riconosce la firma di un **subset font con `ToUnicode` sfasato**: poche coppie, ciascuna rarissima,
+/// i cui caratteri *disegnati* occupano codepoint **consecutivi**.
+///
+/// Complementare a `uniform_shift`, che copre lo shift alfabetico uniforme (il caso LaTeX): lì la
+/// distanza estratto→disegnato è costante, qui a essere contigui sono solo i disegnati, perché in un
+/// font sottoinsieme i glyph-id vengono assegnati in ordine e una finestra traslata li rimappa in
+/// blocco su caratteri d'origine slegati fra loro.
+///
+/// Il caso misurato a valle (field report, PR #1): `h→j`, `ü→k`, `þ→l`, una occorrenza ciascuna su un
+/// documento di 126 pagine. I disegnati `j`, `k`, `l` sono adiacenti; le sorgenti `h`, `ü`, `þ` non lo
+/// sono, quindi `uniform_shift` resta muto e il documento veniva marcato `High`.
+///
+/// Conservativa: chiede **tutte** le condizioni insieme, e una sola coppia frequente la disattiva —
+/// un attacco reale è sistematico e non si nasconde qui. Deterministica, nessun OCR, nessun render.
+pub fn subsetting_window(pairs: &[(char, char, usize)]) -> Option<String> {
+    if pairs.len() < WINDOW_MIN_PAIRS {
+        return None;
+    }
+    if pairs.iter().any(|&(_, _, n)| n > WINDOW_MAX_OCCURRENCES) {
+        return None;
+    }
+    let mut drawn: Vec<u32> = pairs.iter().map(|&(_, truth, _)| truth as u32).collect();
+    drawn.sort_unstable();
+    drawn.dedup();
+    if drawn.len() != pairs.len() {
+        return None; // due coppie che disegnano la stessa lettera non formano una finestra
+    }
+    let span = drawn.last()? - drawn.first()?;
+    if span as usize != drawn.len() - 1 {
+        return None; // non contigui
+    }
+    let letters: String = drawn.iter().filter_map(|&c| char::from_u32(c)).collect();
+    Some(format!(
+        "{} glyph(s) drawing the consecutive letters '{}', each firing at most {}× — the signature of a          subset font with a shifted ToUnicode, not a targeted replacement (which has to be systematic          to change meaning)",
+        pairs.len(),
+        letters,
+        WINDOW_MAX_OCCURRENCES
+    ))
+}
+
+
+#[cfg(test)]
+mod subsetting_window_tests {
+    use super::*;
+
+    /// Il caso misurato: h→j, ü→k, þ→l, una occorrenza ciascuna su 126 pagine.
+    fn field_report_case() -> Vec<(char, char, usize)> {
+        vec![('h', 'j', 1), ('ü', 'k', 1), ('þ', 'l', 1)]
+    }
+
+    #[test]
+    fn riconosce_la_finestra_di_subset_del_field_report() {
+        let reason = subsetting_window(&field_report_case()).expect("va riconosciuta come artefatto");
+        assert!(reason.contains("jkl"), "la spiegazione deve mostrare le lettere contigue: {reason}");
+    }
+
+    // ---- ciò che NON deve essere soppresso ------------------------------------------------
+
+    #[test]
+    fn una_sostituzione_sistematica_non_e_un_artefatto() {
+        // Stesse lettere contigue, ma che scattano molte volte: è il profilo di un attacco reale,
+        // che deve restare High. È il test che impedisce a questa regola di diventare un buco.
+        let attacco = vec![('h', 'j', 40), ('ü', 'k', 12), ('þ', 'l', 9)];
+        assert!(subsetting_window(&attacco).is_none());
+    }
+
+    #[test]
+    fn basta_una_coppia_frequente_per_disattivare_la_regola() {
+        let misto = vec![('h', 'j', 1), ('ü', 'k', 1), ('þ', 'l', 3)];
+        assert!(subsetting_window(&misto).is_none(), "una sola coppia frequente deve bastare");
+    }
+
+    #[test]
+    fn lettere_disegnate_non_contigue_non_sono_una_finestra() {
+        // Il caso chirurgico: poche lettere scelte per trasformare una parola in un'altra.
+        let chirurgico = vec![('l', 'i', 1), ('o', 'e', 1), ('n', 'a', 1)];
+        assert!(subsetting_window(&chirurgico).is_none());
+    }
+
+    #[test]
+    fn due_coppie_non_bastano() {
+        assert!(subsetting_window(&[('h', 'j', 1), ('ü', 'k', 1)]).is_none());
+        assert!(subsetting_window(&[]).is_none());
+    }
+
+    #[test]
+    fn coppie_che_disegnano_la_stessa_lettera_non_formano_una_finestra() {
+        let doppione = vec![('h', 'j', 1), ('ü', 'j', 1), ('þ', 'k', 1)];
+        assert!(subsetting_window(&doppione).is_none());
+    }
+
+    #[test]
+    fn la_finestra_regge_a_ordine_sparso_e_a_finestre_piu_lunghe() {
+        let sparso = vec![('þ', 'l', 1), ('h', 'j', 2), ('ü', 'k', 1)];
+        assert!(subsetting_window(&sparso).is_some(), "l'ordine delle coppie non deve contare");
+        let lunga = vec![('a', 'p', 1), ('b', 'q', 1), ('c', 'r', 1), ('d', 's', 1), ('e', 't', 1)];
+        assert!(subsetting_window(&lunga).is_some());
+    }
+}
