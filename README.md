@@ -470,6 +470,26 @@ fires**, and by whether the extracted character belongs to the document's script
 repertoire — rather than lowering the severity of the rule as such. The measurable test is one this
 crate already has: `ocr-specimen` on that font either confirms the mapping or refutes it.
 
+**Downstream damage, measured (added 2026-08-25).** This is no longer only a routing cost. The
+`h→j` finding feeds the substitution map, and `PhraseDiff::presumed` applies it — so the
+"corrected" sentence is *worse* than the extraction:
+
+```
+ORCHESTRARE  ->  ORCJESTRARE
+che          ->  cje
+collegi      ->  collegji
+Auspichiamo  ->  Auspicjiamo
+```
+
+The consumer put those reconstructions to a guardrails model, which answered **`unsafe` at
+87-100%** on all four passages it flagged — four false alarms manufactured entirely by the
+correction. The consumer now refuses to use `presumed` at all and asks for pixel ground truth or
+nothing, which is a workaround for this, not a fix.
+
+Also measured on the same document: `atlas::verify_with_render` left these findings
+**Unconfirmed** rather than Refuted, so the render does not currently rescue the case either —
+14 of 14 pages stayed routed, for ~30 minutes of rendering and OCR.
+
 ### 2. `INVISIBLE_TEXT_COLOR` on a title over a full-bleed image
 
 Same document, page 1 — a cover slide whose background is **11 images covering 100% of the page**:
