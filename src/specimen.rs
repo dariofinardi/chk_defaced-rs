@@ -159,6 +159,38 @@ fn vote(scored: &[(char, f32)]) -> Option<char> {
 ///
 /// For every distinct glyph: render → OCR → if the OCR letter disagrees (non-homoglyph) with a claimed
 /// character, the font draws one letter and reports another.
+/// Ciò che lo specimen-OCR legge davvero su ogni glifo: coppie `(carattere_estratto, lettera_letta)`,
+/// **accordi inclusi**.
+///
+/// Gli accordi sono la novità: prima venivano scartati sul posto, e con essi l'unica prova capace di
+/// scagionare un finding deterministico. Vedi [`crate::glyphmatch::specimen_verdict`].
+pub fn specimen_reads(fonts: &[crate::FontClaims], ocr: &dyn OcrEngine) -> Vec<(char, char)> {
+    let mut out = Vec::new();
+    for (bytes, claims) in fonts {
+        let Ok(face) = ttf_parser::Face::parse(bytes, 0) else { continue };
+        let mut by_gid: HashMap<u16, Vec<char>> = HashMap::new();
+        for &(ch, gid) in claims {
+            if ch.is_alphabetic() && !is_ligature(ch) {
+                by_gid.entry(gid).or_default().push(ch);
+            }
+        }
+        for (gid, claimed) in by_gid {
+            let Some(img) = render_specimen(&face, gid) else { continue };
+            let scored: Vec<(char, f32)> = ocr
+                .recognize_scored(&img, OcrHint::SingleLine)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(w, conf)| w.chars().find(|c| c.is_alphabetic()).map(|c| (c, conf)))
+                .collect();
+            let Some(drawn) = vote(&scored) else { continue };
+            for ch in claimed {
+                out.push((ch.to_lowercase().next().unwrap_or(ch), drawn));
+            }
+        }
+    }
+    out
+}
+
 pub fn specimen_scan(
     fonts: &[crate::FontClaims],
     ocr: &dyn OcrEngine,

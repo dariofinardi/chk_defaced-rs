@@ -146,6 +146,49 @@ pub fn subsetting_window(pairs: &[(char, char, usize)]) -> Option<String> {
 }
 
 
+/// Cosa dice lo specimen-OCR su un finding deterministico.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecimenVerdict {
+    /// Il glifo disegna davvero la lettera che il confronto degli outline gli attribuisce.
+    Corroborated,
+    /// Il glifo disegna la lettera **estratta**: la `cmap`/`ToUnicode` era onesta e l'aggancio
+    /// dell'outline era sbagliato.
+    Refuted,
+    /// Letture assenti o discordanti: lo specimen non decide.
+    Inconclusive,
+}
+
+/// Confronta le sostituzioni deterministiche con ciò che lo specimen-OCR legge davvero sui glifi.
+///
+/// `subs` sono le coppie `(estratto, disegnato_secondo_gli_outline)`; `specimen_reads` sono le coppie
+/// `(estratto, lettera_letta_dall_OCR_sul_glifo)`, **accordi inclusi** — è il punto: un glifo che
+/// l'OCR legge uguale al carattere estratto è prova che il font non mente, e prima veniva scartata
+/// perché lo specimen registrava soltanto i disaccordi.
+///
+/// ⚠️ Limite da tenere presente: lo specimen parla del **glifo**, non della pagina. Dice quale lettera
+/// quel disegno rappresenta, non se il testo visibile è stato alterato; per quello resta autorevole la
+/// verifica a render ([`crate::textdiff::ocr_refutes_substitutions`]). Serve però a chiudere in
+/// anticipo, e senza rasterizzare pagine, i casi in cui l'aggancio dell'outline ha preso un abbaglio.
+pub fn specimen_verdict(subs: &[(char, char)], specimen_reads: &[(char, char)]) -> SpecimenVerdict {
+    let (mut pro, mut contra) = (0usize, 0usize);
+    for &(extracted, claimed_drawn) in subs {
+        for &(e, read) in specimen_reads.iter().filter(|(e, _)| *e == extracted) {
+            let _ = e;
+            if legitimately_identical_ci(read, claimed_drawn) {
+                pro += 1;
+            } else if legitimately_identical_ci(read, extracted) {
+                contra += 1;
+            }
+        }
+    }
+    match (pro, contra) {
+        (0, 0) => SpecimenVerdict::Inconclusive,
+        (0, _) => SpecimenVerdict::Refuted,
+        (_, 0) => SpecimenVerdict::Corroborated,
+        _ => SpecimenVerdict::Inconclusive, // prove in conflitto: non si decide
+    }
+}
+
 #[cfg(test)]
 mod subsetting_window_tests {
     use super::*;
@@ -202,5 +245,55 @@ mod subsetting_window_tests {
         assert!(subsetting_window(&sparso).is_some(), "l'ordine delle coppie non deve contare");
         let lunga = vec![('a', 'p', 1), ('b', 'q', 1), ('c', 'r', 1), ('d', 's', 1), ('e', 't', 1)];
         assert!(subsetting_window(&lunga).is_some());
+    }
+}
+
+#[cfg(test)]
+mod specimen_verdict_tests {
+    use super::*;
+
+    /// Le sostituzioni deterministiche del field report: l'estratto 'h' disegnerebbe 'j'.
+    const SUBS: [(char, char); 1] = [('h', 'j')];
+
+    #[test]
+    fn lo_specimen_scagiona_quando_il_glifo_disegna_la_lettera_estratta() {
+        // L'OCR del glifo legge 'h': la ToUnicode era onesta e l'aggancio dell'outline sbagliato.
+        // È la prova d'accordo che prima veniva scartata sul posto.
+        assert_eq!(specimen_verdict(&SUBS, &[('h', 'h')]), SpecimenVerdict::Refuted);
+    }
+
+    #[test]
+    fn lo_specimen_conferma_quando_il_glifo_disegna_davvero_l_altra_lettera() {
+        assert_eq!(specimen_verdict(&SUBS, &[('h', 'j')]), SpecimenVerdict::Corroborated);
+    }
+
+    #[test]
+    fn senza_letture_non_si_decide() {
+        assert_eq!(specimen_verdict(&SUBS, &[]), SpecimenVerdict::Inconclusive);
+        // Lettura su un carattere che non c'entra: non tocca il finding.
+        assert_eq!(specimen_verdict(&SUBS, &[('z', 'z')]), SpecimenVerdict::Inconclusive);
+        // Lettura che non è né l'estratto né il disegnato dichiarato.
+        assert_eq!(specimen_verdict(&SUBS, &[('h', 'w')]), SpecimenVerdict::Inconclusive);
+    }
+
+    #[test]
+    fn prove_in_conflitto_non_decidono() {
+        // Due glifi per lo stesso carattere, letti in modo opposto: il dubbio non si risolve
+        // inventando una risposta.
+        let verdict = specimen_verdict(&SUBS, &[('h', 'h'), ('h', 'j')]);
+        assert_eq!(verdict, SpecimenVerdict::Inconclusive);
+    }
+
+    #[test]
+    fn gli_omoglifi_non_creano_falsi_disaccordi() {
+        // 'H' latina letta per 'h': stessa lettera, non una smentita.
+        assert_eq!(specimen_verdict(&SUBS, &[('h', 'H')]), SpecimenVerdict::Refuted);
+    }
+
+    #[test]
+    fn piu_sostituzioni_votano_insieme() {
+        let subs = [('h', 'j'), ('ü', 'k'), ('þ', 'l')];
+        let reads = [('h', 'h'), ('ü', 'ü'), ('þ', 'þ')];
+        assert_eq!(specimen_verdict(&subs, &reads), SpecimenVerdict::Refuted);
     }
 }
