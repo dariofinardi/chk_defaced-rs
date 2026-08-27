@@ -109,13 +109,16 @@ pub fn verify_with_render(report: &mut Report, pdf: &Path, pdfium_dir: &Path, oc
     let ocr_text: String = pages.iter().map(|p| p.visual.as_str()).collect::<Vec<_>>().join("\n");
     let ocr_sents = crate::finding::split_sentences(&ocr_text);
     for ph in &mut report.phrases {
+        // Il candidato `presumed` e' ancora legittimo *durante* la verifica: serve ad agganciare la
+        // frase alla sua riga OCR. Viene ritirato dopo, se nulla lo corrobora.
+        let cand = ph.presumed.clone().unwrap_or_default();
         let best = ocr_sents.iter().max_by(|a, b| {
-            let sa = jaccard(&ph.presumed, a).max(jaccard(&ph.extracted, a));
-            let sb = jaccard(&ph.presumed, b).max(jaccard(&ph.extracted, b));
+            let sa = jaccard(&cand, a).max(jaccard(&ph.extracted, a));
+            let sb = jaccard(&cand, b).max(jaccard(&ph.extracted, b));
             sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
         });
         if let Some(s) = best {
-            if jaccard(&ph.presumed, s).max(jaccard(&ph.extracted, s)) >= 0.4 {
+            if jaccard(&cand, s).max(jaccard(&ph.extracted, s)) >= 0.4 {
                 ph.ocr = Some(s.clone());
             }
         }
@@ -151,6 +154,10 @@ pub fn verify_with_render(report: &mut Report, pdf: &Path, pdfium_dir: &Path, oc
             );
         }
     } // else: inconclusive OCR → stays Unconfirmed
+
+    // Il verdetto e' deciso: se non e' Confirmed, la ricostruzione non ha corroborazione e va ritirata
+    // qui, non solo in `finalize`, perche' l'invariante valga anche per chi chiama la libreria a mano.
+    report.withdraw_uncorroborated_presumed();
     Ok(())
 }
 

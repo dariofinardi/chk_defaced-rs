@@ -276,7 +276,13 @@ fn print_human(r: &Report) {
                 println!("    [page {pg}]");
             }
             println!("    read:     {}", p.extracted);
-            println!("    presumed: {}", p.presumed);
+            match (&p.presumed, p.presumed_withheld) {
+                (Some(pr), _) => println!("    presumed: {pr}"),
+                (None, true) => println!(
+                    "    presumed: (withheld — no corroboration; applying it could worsen the text)"
+                ),
+                (None, false) => {}
+            }
             if let Some(ocr) = &p.ocr {
                 println!("    ocr:      {ocr}");
             }

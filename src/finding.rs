@@ -107,8 +107,19 @@ pub struct Report {
 pub struct PhraseDiff {
     /// What an extractor / RAG reads (the lie, for a defacement).
     pub extracted: String,
-    /// What the glyphs presumably render, by applying the recovered substitution map (best-effort).
-    pub presumed: String,
+    /// What the glyphs presumably render, by applying the recovered substitution map.
+    ///
+    /// **`None` means the reconstruction was withheld**, not that there is none: a substitution map
+    /// recovered from a deterministic signal is a *candidate*, and applying it without corroboration
+    /// can make the text worse than the extraction (a subset font with a broken `ToUnicode` yields
+    /// `ORCHESTRARE -> ORCJESTRARE`). Present only when [`Verdict::Confirmed`] — see
+    /// [`Report::withdraw_uncorroborated_presumed`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presumed: Option<String>,
+    /// `true` when a reconstruction existed but was withheld for lack of corroboration. Distinguishes
+    /// "nothing to correct" from "correction not trustworthy", which a consumer must not confuse.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub presumed_withheld: bool,
     /// 1-based page the sentence occurs on (PDF only; `None` for the page-less DOCX flow).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<u32>,
@@ -140,7 +151,29 @@ impl Report {
     /// Compute the explicit [`Assessment`] from the current findings. Idempotent — call it after the
     /// deterministic scan and again after any OCR escalation (which may raise severities). `defaced` =
     /// a High+ `FontIntegrity` finding; `hidden_text` = a Medium+ `HiddenContent` finding.
+    /// Withdraw every `presumed` reconstruction that no independent evidence corroborates.
+    ///
+    /// The substitution map comes from a deterministic outline signal, which cannot tell a real
+    /// semantic replacement from a subset font whose `ToUnicode` lies. Applied to the second, it
+    /// *degrades* correct text — and a downstream guardrail then flags the damage the correction
+    /// itself produced. So the reconstruction is handed out only under [`Verdict::Confirmed`];
+    /// otherwise it is withheld and the phrase says so via `presumed_withheld`.
+    ///
+    /// Called by [`Report::finalize`] and at the end of the render verification, so the invariant
+    /// holds on every path: **`presumed.is_some()` implies corroborated**.
+    pub fn withdraw_uncorroborated_presumed(&mut self) {
+        if self.verdict == Some(Verdict::Confirmed) {
+            return;
+        }
+        for ph in &mut self.phrases {
+            if ph.presumed.take().is_some() {
+                ph.presumed_withheld = true;
+            }
+        }
+    }
+
     pub fn finalize(&mut self) {
+        self.withdraw_uncorroborated_presumed();
         let max = self.max_severity();
         let defaced = self
             .findings
@@ -232,11 +265,93 @@ pub fn phrase_diffs_paged(extracted_text: &str, subs: &[(char, char)], page: Opt
         .filter_map(|s| {
             let presumed = apply_substitutions(&s, subs);
             if presumed != s {
-                Some(PhraseDiff { extracted: s, presumed, page, ocr: None })
+                Some(PhraseDiff {
+                    extracted: s,
+                    presumed: Some(presumed),
+                    presumed_withheld: false,
+                    page,
+                    ocr: None,
+                })
             } else {
                 None
             }
         })
         .take(100)
         .collect()
+}
+
+#[cfg(test)]
+mod presumed_gating_tests {
+    use super::*;
+
+    /// Il caso reale del field report: un subset font con `ToUnicode` rotto produce la mappa
+    /// `h→j`, che applicata *peggiora* testo corretto.
+    const DAMAGING_SUBS: [(char, char); 1] = [('h', 'j')];
+    const SENTENCE: &str = "Auspichiamo di orchestrare i collegi che decidono.";
+
+    fn report_with_phrases(verdict: Option<Verdict>) -> Report {
+        let mut r = Report::new("deck.pdf", "pdf");
+        r.phrases = phrase_diffs(SENTENCE, &DAMAGING_SUBS);
+        r.verdict = verdict;
+        r
+    }
+
+    #[test]
+    fn la_ricostruzione_candidata_e_davvero_peggiorativa() {
+        // Non e' un'ipotesi: la mappa recuperata danneggia il testo. Se un giorno questo test
+        // fallisse, l'esempio non varrebbe piu' come regressione.
+        let phrases = phrase_diffs(SENTENCE, &DAMAGING_SUBS);
+        let presumed = phrases[0].presumed.as_deref().unwrap();
+        assert!(presumed.contains("Auspicjiamo"), "{presumed}");
+        assert!(presumed.contains("orcjestrare"), "{presumed}");
+        assert!(presumed.contains("cje"), "{presumed}");
+    }
+
+    #[test]
+    fn confermato_la_ricostruzione_resta() {
+        let mut r = report_with_phrases(Some(Verdict::Confirmed));
+        r.finalize();
+        assert!(r.phrases[0].presumed.is_some(), "sotto Confirmed la ricostruzione va consegnata");
+        assert!(!r.phrases[0].presumed_withheld);
+    }
+
+    #[test]
+    fn non_confermato_la_ricostruzione_e_ritirata() {
+        // Il caso misurato a valle: il render lascia Unconfirmed, e prima di questa modifica il
+        // consumatore riceveva comunque la "correzione" che ha fabbricato quattro falsi allarmi.
+        for verdict in [None, Some(Verdict::Unconfirmed), Some(Verdict::Refuted)] {
+            let mut r = report_with_phrases(verdict);
+            r.finalize();
+            let ph = &r.phrases[0];
+            assert!(ph.presumed.is_none(), "verdetto {verdict:?}: la ricostruzione non va consegnata");
+            assert!(ph.presumed_withheld, "verdetto {verdict:?}: il ritiro va dichiarato");
+            assert_eq!(ph.extracted, SENTENCE, "il testo estratto resta intatto");
+        }
+    }
+
+    #[test]
+    fn il_ritiro_e_idempotente_e_non_resuscita() {
+        let mut r = report_with_phrases(Some(Verdict::Unconfirmed));
+        r.finalize();
+        r.finalize();
+        assert!(r.phrases[0].presumed.is_none());
+        assert!(r.phrases[0].presumed_withheld);
+    }
+
+    #[test]
+    fn nel_json_il_campo_sparisce_invece_di_mentire() {
+        // Un consumatore che legge il JSON non deve trovare una `presumed` non corroborata: il campo
+        // assente e' l'unico segnale che non si presta a essere usato per sbaglio.
+        let mut r = report_with_phrases(Some(Verdict::Unconfirmed));
+        r.finalize();
+        let js = serde_json::to_string(&r).unwrap();
+        assert!(!js.contains("\"presumed\":"), "{js}");
+        assert!(js.contains("\"presumed_withheld\":true"), "{js}");
+
+        let mut ok = report_with_phrases(Some(Verdict::Confirmed));
+        ok.finalize();
+        let js_ok = serde_json::to_string(&ok).unwrap();
+        assert!(js_ok.contains("\"presumed\":"), "{js_ok}");
+        assert!(!js_ok.contains("presumed_withheld"), "{js_ok}");
+    }
 }
