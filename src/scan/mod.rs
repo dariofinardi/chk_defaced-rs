@@ -47,8 +47,17 @@ pub fn scan_path_with_ocr(
 
     let already = report.findings.iter().any(|f| f.rule.contains("GLYPH_SEMANTIC_REPLACEMENT"));
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    if !already && matches!(ext.as_str(), "pdf" | "docx") {
-        if let Ok(extra) = crate::specimen::specimen_scan_path(path, ocr) {
+    if matches!(ext.as_str(), "pdf" | "docx") {
+        if already {
+            // Il segnale deterministico c'e': lo specimen serve a **verificarlo**. Prima veniva
+            // saltato proprio qui, cioe' nell'unico caso in cui esiste un finding da smentire, e la
+            // sua prova d'accordo andava persa. Costa in proporzione ai glifi distinti, non alle
+            // pagine, quindi puo' girare come conferma ordinaria.
+            if let Err(e) = crate::specimen::confirm_with_specimen(path, &mut report, ocr) {
+                eprintln!("[warn] specimen confirmation skipped: {e:#}");
+            }
+        } else if let Ok(extra) = crate::specimen::specimen_scan_path(path, ocr) {
+            // Nessun segnale: escalation per il font senza ancora onesta.
             report.findings.extend(extra);
         }
     }

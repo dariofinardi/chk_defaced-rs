@@ -31,7 +31,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
-use crate::finding::{Category, Finding, Severity};
+use crate::finding::{Category, Finding, Report, Severity};
 use crate::ocr::{GrayImage, OcrEngine, OcrHint};
 
 const PX: f32 = 72.0; // glyph height in pixels (bigger reads more reliably)
@@ -248,6 +248,69 @@ pub fn specimen_scan(
     Ok(findings)
 }
 
+/// **Conferma** di finding deterministici già emessi, con lo specimen-OCR.
+///
+/// Speculare a [`specimen_scan_path`], che copre il caso opposto (nessun segnale deterministico, font
+/// senza àncora onesta). Qui il segnale c'è già, e la domanda è se regga: si rende ogni glifo e lo si
+/// legge, poi [`crate::glyphmatch::specimen_verdict`] confronta le letture con le sostituzioni
+/// recuperate. Se il glifo disegna la lettera **estratta**, la `ToUnicode` era onesta e l'aggancio
+/// dell'outline aveva preso un abbaglio: i finding scendono a `Info` e il verdetto diventa `Refuted`.
+///
+/// Costo: proporzionale ai **glifi distinti**, non alle pagine — niente rasterizzazione di pagine,
+/// nessun pdfium. È la ragione per cui può girare come conferma ordinaria e non solo come escalation.
+///
+/// Non tocca nulla se le prove mancano o si contraddicono: il dubbio resta dov'era.
+pub fn confirm_with_specimen(
+    path: &std::path::Path,
+    report: &mut Report,
+    ocr: &dyn OcrEngine,
+) -> Result<crate::glyphmatch::SpecimenVerdict> {
+    use crate::glyphmatch::SpecimenVerdict;
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let (subs, fonts) = match ext.as_str() {
+        "pdf" => {
+            let scan = crate::pdf_glyph::pdf_outline_scan(path).context("PDF outline scan")?;
+            (scan.substitutions, crate::pdf_glyph::pdf_font_claims(path)?)
+        }
+        "docx" => {
+            let scan = crate::docx_glyph::docx_outline_scan(path).context("DOCX outline scan")?;
+            (scan.substitutions, crate::docx_glyph::docx_font_claims(path)?)
+        }
+        other => anyhow::bail!("specimen confirmation unsupported for .{other} (pdf, docx only)"),
+    };
+    if subs.is_empty() {
+        return Ok(SpecimenVerdict::Inconclusive);
+    }
+    let reads = specimen_reads(&fonts, ocr);
+    let verdict = crate::glyphmatch::specimen_verdict(&subs, &reads);
+    match verdict {
+        SpecimenVerdict::Refuted => {
+            report.verdict = Some(crate::finding::Verdict::Refuted);
+            for f in
+                report.findings.iter_mut().filter(|f| f.rule.contains("GLYPH_SEMANTIC_REPLACEMENT"))
+            {
+                f.severity = Severity::Info;
+                f.message.push_str(
+                    " — specimen-refuted: rendering the glyph and reading it back returns the extracted letter, so the font's mapping is honest and the outline match was wrong",
+                );
+            }
+        }
+        SpecimenVerdict::Corroborated => {
+            report.push(Finding::new(
+                "GLYPH_REPLACEMENT_SPECIMEN_CONFIRMED",
+                Severity::High,
+                Category::FontIntegrity,
+                "embedded font",
+                "specimen OCR confirms the glyph draws the letter the outline match attributes to it"
+                    .to_string(),
+                0.9,
+            ));
+        }
+        SpecimenVerdict::Inconclusive => {}
+    }
+    Ok(verdict)
+}
+
 /// Convenience: scan a document's fonts by path, dispatching on extension. Builds the claim sets via the
 /// same extraction the deterministic detectors use, then runs [`specimen_scan`].
 pub fn specimen_scan_path(path: &std::path::Path, ocr: &dyn OcrEngine) -> Result<Vec<Finding>> {
@@ -305,5 +368,87 @@ mod tests {
         assert_eq!(vote(&[('m', hi), ('m', hi), ('x', hi)]), Some('m')); // confident majority
         assert_eq!(vote(&[('m', hi), ('d', hi)]), None); // tie → inconclusive
         assert_eq!(vote(&[('m', hi), ('d', lo)]), Some('m')); // the low-confidence rival is discarded
+    }
+}
+
+#[cfg(test)]
+mod confirm_tests {
+    use super::*;
+    use crate::finding::Verdict;
+    use crate::ocr::MockOcr;
+    use std::path::PathBuf;
+
+    fn fixture() -> Option<PathBuf> {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../data/attack-fixtures/replaced.pdf");
+        p.exists().then_some(p)
+    }
+
+    /// La prima coppia `(estratto, disegnato)` della mappa recuperata. Ricavata a runtime e non
+    /// scritta a mano: la direzione dipende dai dati, e darla per scontata rende il test una bugia.
+    fn prima_coppia(p: &std::path::Path) -> (char, char) {
+        let subs = crate::pdf_glyph::pdf_outline_scan(p).expect("scan").substitutions;
+        *subs.first().expect("la fixture deve produrre sostituzioni")
+    }
+
+    fn scanned(path: &std::path::Path) -> crate::finding::Report {
+        crate::scan::scan_path(path, None).expect("scan")
+    }
+
+    fn n_high_replacement(r: &crate::finding::Report) -> usize {
+        r.findings
+            .iter()
+            .filter(|f| f.rule.contains("GLYPH_SEMANTIC_REPLACEMENT") && f.severity == Severity::High)
+            .count()
+    }
+
+    #[test]
+    fn lo_specimen_scagiona_se_il_glifo_disegna_la_lettera_estratta() {
+        let Some(p) = fixture() else { return };
+        let (estratto, _) = prima_coppia(&p);
+        let mut r = scanned(&p);
+        assert!(n_high_replacement(&r) > 0, "la fixture deve partire con finding High");
+
+        // L'OCR legge sul glifo la stessa lettera che il documento estrae: la mappatura e' onesta.
+        let v = confirm_with_specimen(&p, &mut r, &MockOcr(estratto.to_string())).expect("conferma");
+        assert_eq!(v, crate::glyphmatch::SpecimenVerdict::Refuted);
+        assert_eq!(r.verdict, Some(Verdict::Refuted));
+        assert_eq!(n_high_replacement(&r), 0, "i finding vanno declassati a Info");
+    }
+
+    #[test]
+    fn lo_specimen_conferma_se_il_glifo_disegna_la_lettera_attribuita() {
+        let Some(p) = fixture() else { return };
+        let (_, disegnato) = prima_coppia(&p);
+        let mut r = scanned(&p);
+        let prima = n_high_replacement(&r);
+
+        let v = confirm_with_specimen(&p, &mut r, &MockOcr(disegnato.to_string())).expect("conferma");
+        assert_eq!(v, crate::glyphmatch::SpecimenVerdict::Corroborated);
+        assert_eq!(n_high_replacement(&r), prima, "nessun declassamento");
+        assert!(r.findings.iter().any(|f| f.rule.contains("SPECIMEN_CONFIRMED")));
+    }
+
+    #[test]
+    fn letture_estranee_lasciano_il_dubbio_dov_era() {
+        let Some(p) = fixture() else { return };
+        let (estratto, disegnato) = prima_coppia(&p);
+        // una lettera che non e' ne' l'estratto ne' l'attribuito
+        let estranea = ('a'..='z').find(|c| *c != estratto && *c != disegnato).unwrap();
+        let mut r = scanned(&p);
+        let prima = n_high_replacement(&r);
+        let verdetto_prima = r.verdict;
+
+        let v = confirm_with_specimen(&p, &mut r, &MockOcr(estranea.to_string())).expect("conferma");
+        assert_eq!(v, crate::glyphmatch::SpecimenVerdict::Inconclusive);
+        assert_eq!(n_high_replacement(&r), prima, "il report non va toccato");
+        assert_eq!(r.verdict, verdetto_prima, "il verdetto resta quello che era");
+    }
+
+    #[test]
+    fn formati_non_supportati_danno_errore_esplicito() {
+        let mut r = crate::finding::Report::new("x.html", "html");
+        let err = confirm_with_specimen(std::path::Path::new("x.html"), &mut r, &MockOcr("a".into()))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("unsupported"), "{err:#}");
     }
 }
