@@ -30,6 +30,12 @@
 //! The `html` feature pulls the (heavier) HTML+CSS backend; disable it (`default-features = false`)
 //! when only PDF/DOCX scanning is needed.
 
+// `chunks_exact_to_as_chunks` (clippy 1.98) suggerisce `as_chunks::<N>()`, stabile solo da Rust 1.88:
+// applicarlo alzerebbe in silenzio la toolchain minima richiesta, e per giunta in una patch release.
+// Il crate non dichiara una `rust-version`, quindi finche' quella decisione non e' presa il lint resta
+// disattivato invece di essere aggirato. `unknown_lints` copre le toolchain piu' vecchie del lint.
+#![allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+
 /// One embedded font for the specimen-OCR escalation: its raw bytes and the `(claimed_char, glyph_id)`
 /// pairs the document extracts. Produced by `pdf_glyph::pdf_font_claims` / `docx_glyph::docx_font_claims`,
 /// consumed by `specimen::specimen_scan`.

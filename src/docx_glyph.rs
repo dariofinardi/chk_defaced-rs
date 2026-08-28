@@ -258,7 +258,7 @@ pub fn docx_outline_scan(path: &Path) -> Result<OutlineScan> {
 }
 
 /// Per embedded font, the de-obfuscated font bytes plus the `(claimed_char, glyph_id)` pairs the
-/// document extracts — input for the specimen-OCR escalation ([`crate::specimen`]). Same extraction and
+/// document extracts — input for the specimen-OCR escalation (`crate::specimen`, feature `ocr-specimen`). Same extraction and
 /// document-text scoping as [`docx_outline_scan`], but it records the claims (so a custom font with no
 /// honest anchor is still checkable by OCR). Restricted to glyphs whose extracted character actually
 /// occurs in the document, which also bounds the OCR cost on Word's full (non-subset) embedded fonts.

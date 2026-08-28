@@ -158,13 +158,13 @@ pub fn scan(path: &Path, registry: Option<&FontRegistry>) -> Result<Report> {
 
 /// Scan an **already-loaded** document.
 ///
-/// Split out of [`scan`] so a caller that already holds the `lopdf::Document`
+/// Split out of [`fn@scan`] so a caller that already holds the `lopdf::Document`
 /// pays for a single parse. That caller has to be on the same lopdf as this
 /// crate for the type to be the same one, which is why this arrives together
 /// with the bump to 0.44.
 pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) -> Result<Report> {
     let mut report = Report::new(label, "pdf");
-    let meta = crate::metadata::pdf_metadata(&doc);
+    let meta = crate::metadata::pdf_metadata(doc);
     if !meta.is_empty() {
         report.metadata = Some(meta);
     }
@@ -173,10 +173,10 @@ pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) ->
 
     for obj in doc.objects.values() {
         let Some(d) = as_dict(obj) else { continue };
-        if dget(&doc, d, b"Type").and_then(name_of).as_deref() != Some("Font") {
+        if dget(doc, d, b"Type").and_then(name_of).as_deref() != Some("Font") {
             continue;
         }
-        let base = dget(&doc, d, b"BaseFont").and_then(name_of).unwrap_or_else(|| "(no BaseFont)".into());
+        let base = dget(doc, d, b"BaseFont").and_then(name_of).unwrap_or_else(|| "(no BaseFont)".into());
         let loc = format!("font {base}");
         examined += 1;
 
@@ -190,7 +190,7 @@ pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) ->
         // have no standard Unicode into the PUA — benign noise. A deliberate obfuscation garbles many
         // (the test corpus shows 1-2 for clean PDFs vs 20-150+ for attacks), so we require >= 4.
         const GARBLED_MIN: usize = 4;
-        let garbled = tounicode_pua_count(&doc, d);
+        let garbled = tounicode_pua_count(doc, d);
         if garbled >= GARBLED_MIN && !is_math_or_symbol_font(family) {
             report.push(Finding::new(
                 "PDF.TOUNICODE_GARBLED",
@@ -203,7 +203,7 @@ pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) ->
         }
 
         // /Encoding /Differences: custom encoding (potential code redirect).
-        if let Some(enc) = dget(&doc, d, b"Encoding").and_then(as_dict) {
+        if let Some(enc) = dget(doc, d, b"Encoding").and_then(as_dict) {
             if enc.get(b"Differences").is_ok() {
                 report.push(Finding::new(
                     "PDF.CUSTOM_DIFFERENCES",
@@ -217,7 +217,7 @@ pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) ->
         }
 
         // Embedded font program → coherence (registry/PUA).
-        if let Some(bytes) = embedded_font_bytes(&doc, d) {
+        if let Some(bytes) = embedded_font_bytes(doc, d) {
             for parsed in font::parse_data(&bytes) {
                 scan::judge_embedded_font(&parsed, &loc, registry, &mut report.findings);
             }
@@ -242,7 +242,7 @@ pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) ->
     // draws one letter but is reached from a different extracted character. No OCR, no rendering.
     // Reuses the already-loaded `doc` (no second/third PDF parse).
     {
-        let outline = crate::pdf_glyph::pdf_outline_scan_doc(&doc);
+        let outline = crate::pdf_glyph::pdf_outline_scan_doc(doc);
         let mut subs = outline.substitutions;
         // Gate on the substitution map, not on findings: a suppressed uniform-shift artifact returns an
         // Info note with NO substitutions, and must not set the Unconfirmed verdict or run the registry
@@ -254,7 +254,7 @@ pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) ->
             // a different canonical letter, that confirms the tamper and gives the correct direction.
             if let Some(reg) = registry {
                 {
-                    let csubs = crate::pdf_glyph::pdf_canonical_substitutions_doc(&doc, reg);
+                    let csubs = crate::pdf_glyph::pdf_canonical_substitutions_doc(doc, reg);
                     if !csubs.is_empty() {
                         report.verdict = Some(crate::finding::Verdict::Confirmed);
                         let list = csubs.iter().take(6).map(|(e, d)| format!("'{e}'→'{d}'")).collect::<Vec<_>>().join(", ");
@@ -291,7 +291,7 @@ pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) ->
 
     // Invisible / cloaked text (prompt-injection vector): white-on-white, sub-visible size, invisible
     // render mode, off-page — orthogonal to font defacement. Reuses the already-loaded `doc`.
-    report.findings.extend(crate::visibility::pdf_visibility_scan(&doc));
+    report.findings.extend(crate::visibility::pdf_visibility_scan(doc));
 
     report.fonts_examined = examined;
     Ok(report)
