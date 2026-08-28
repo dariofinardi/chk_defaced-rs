@@ -237,6 +237,7 @@ pub(crate) fn render_word_px(face: &ttf_parser::Face, gids: &[u16], px: f32) -> 
 /// mappa diretta sia con l'inversa: non e' una prova che il font sia onesto, e' la sonda che guarda
 /// nel posto sbagliato. Per vedere l'attacco servono i **gid effettivamente usati in quella
 /// posizione**, che stanno nel content stream, non nel riassunto ToUnicode.
+#[doc(hidden)] // Non ancora collegato al flusso di scansione: vedi il limite qui sopra.
 pub fn word_specimen_side(
     face: &ttf_parser::Face,
     char_to_gid: &HashMap<char, u16>,

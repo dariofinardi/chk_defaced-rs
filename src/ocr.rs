@@ -166,6 +166,10 @@ mod tests {
                 cands.push(PathBuf::from(p));
             }
             if let Ok(appdata) = std::env::var("APPDATA") {
+                // L'architettura viene dal target, non scritta a mano: con `aarch64` fisso la
+                // ricerca falliva su Windows x64, dove il binding installa sotto `x86_64`.
+                let arch = std::env::consts::ARCH;
+                cands.push(PathBuf::from(&appdata).join(format!("tesseract-rs/{arch}/dynamic/tessdata")));
                 cands.push(PathBuf::from(&appdata).join("tesseract-rs/aarch64/dynamic/tessdata"));
                 cands.push(PathBuf::from(&appdata).join("tesseract-rs/tessdata"));
             }

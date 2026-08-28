@@ -49,6 +49,18 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # La `rust-version` dichiarata nel manifest e' una promessa ai consumatori: qui si verifica
+  # che sia vera, invece di restare un numero scritto una volta e mai piu' controllato.
+  msrv:
+    name: MSRV dichiarata (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --lib
+      - run: cargo test --lib
+
   # Contraltare del job fissato: gira sulla `stable` del giorno e **avvisa senza bloccare**.
   # Serve a vedere i lint nuovi quando escono invece che quando aggiorniamo il pin, senza che
   # decidano loro se una PR e' mergiabile. Se diventa rosso, si valuta e si alza il pin.

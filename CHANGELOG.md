@@ -4,7 +4,36 @@ Formato ispirato a [Keep a Changelog](https://keepachangelog.com/it/1.1.0/); il 
 [SemVer](https://semver.org/lang/it/) con la convenzione dello 0.x, dove **il minor segnala una
 rottura**. Le versioni precedenti alla 0.3.0 sono ricostruibili dalla storia git.
 
-## [0.3.2] — non ancora rilasciata
+## [0.3.3] — non ancora rilasciata
+
+Pulizia delle cose rimaste in sospeso, e una catena che si chiude da sé.
+
+### Aggiunto
+
+- **`rust-version = "1.88"`**, *misurata* e non stimata: con 1.86 cargo rifiuta l'albero perché
+  `lopdf 0.44` richiede 1.88 (e con lui `time`, `time-core`, `weezl`). Verificata compilando e
+  passando i test con quella toolchain, e presidiata da un job di CI: una MSRV dichiarata e mai
+  ricontrollata è una promessa che invecchia.
+
+### Corretto
+
+- **La ricerca dei `traineddata` funziona anche fuori da ARM64.** Il percorso aveva `aarch64`
+  scritto a mano, quindi su Windows x64 non trovava la directory installata dal binding e serviva
+  `TESSDATA_PREFIX` esplicito. Ora l'architettura viene da `std::env::consts::ARCH`, con il vecchio
+  percorso mantenuto come ripiego.
+- Ripristinato il lint `chunks_exact_to_as_chunks`, applicando `as_chunks::<2>()` nei tre punti.
+  Era disattivato perché la correzione richiede Rust 1.88 e non volevo alzare in silenzio la
+  toolchain minima — ma misurando la MSRV si è scoperto che era **già** 1.88, imposta dalle
+  dipendenze. Le due questioni erano la stessa, e risolverne una ha risolto l'altra.
+
+### Modificato
+
+- `specimen::word_specimen_side` è `#[doc(hidden)]`: è pubblicata dalla 0.3.0 ma non collegata al
+  flusso di scansione, e con un limite noto (la mappa carattere→glifo ne tiene uno solo, mentre un
+  defacement è proprio il caso in cui lo stesso carattere ne ha due). Resta raggiungibile per chi
+  la sta già usando, ma non si presenta come API supportata finché non lo è.
+
+## [0.3.2] — 2026-08-28
 
 Solo documentazione e metadati: nessun cambio di codice, nessuna rottura.
 

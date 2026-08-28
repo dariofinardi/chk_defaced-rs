@@ -86,8 +86,8 @@ impl FontDecode {
             return;
         }
         if self.two_byte {
-            for ch in bytes.chunks_exact(2) {
-                let code = u32::from(u16::from_be_bytes([ch[0], ch[1]]));
+            for ch in bytes.as_chunks::<2>().0 {
+                let code = u32::from(u16::from_be_bytes(*ch));
                 if let Some(&c) = self.map.get(&code) {
                     out.push(c);
                 }

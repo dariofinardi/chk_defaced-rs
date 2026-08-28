@@ -108,7 +108,7 @@ fn cid_to_gid(doc: &Document, fontdict: &Dictionary) -> CidGid {
     match dget(doc, d, b"CIDToGIDMap") {
         Some(Object::Stream(s)) => match s.decompressed_content() {
             Ok(bytes) => {
-                CidGid::Map(bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect())
+                CidGid::Map(bytes.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c)).collect())
             }
             Err(_) => CidGid::Identity,
         },

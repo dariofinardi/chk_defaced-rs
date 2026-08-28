@@ -59,14 +59,12 @@ Tesseract reads nothing without the model for the language. Lookup order, in
 `ocr::TesseractOcr::find_tessdata`:
 
 1. `$TESSDATA_PREFIX`
-2. `%APPDATA%\tesseract-rs\aarch64\dynamic\tessdata`
-3. `%APPDATA%\tesseract-rs\tessdata`
-4. `C:\Program Files\Tesseract-OCR\tessdata`
+2. `%APPDATA%\tesseract-rs\<arch>\dynamic\tessdata` — `<arch>` from `std::env::consts::ARCH`
+3. `%APPDATA%\tesseract-rs\aarch64\dynamic\tessdata` — legacy fallback
+4. `%APPDATA%\tesseract-rs\tessdata`
+5. `C:\Program Files\Tesseract-OCR\tessdata`
 
 A directory counts only if it actually contains `eng.traineddata`.
-
-> **Known limitation.** Step 2 has `aarch64` hard-coded, so on x64 Windows the automatic fallback
-> misses the directory the binding installed. Set `TESSDATA_PREFIX` explicitly there.
 
 Models: [tesseract-ocr/tessdata](https://github.com/tesseract-ocr/tessdata) (Apache-2.0).
 `tessdata_fast` is enough for the specimen path — it reads single glyphs and short words, not pages.
@@ -113,7 +111,7 @@ the native features depend on what the upstream projects support.
 | | default build | `ocr-*` | `render-*` |
 |---|---|---|---|
 | Windows arm64 | verified | verified | verified |
-| Windows x64 | expected | set `TESSDATA_PREFIX` (see limitation above) | expected |
+| Windows x64 | expected | expected | expected |
 | Linux | verified in CI | untested | needs GTK/WebKitGTK |
 | macOS | expected | untested | untested |
 
@@ -138,8 +136,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo build --no-default-features
 ```
 
-The pinned number is a *tested with*, **not** an MSRV: the crate does not declare `rust-version`
-yet.
+The pinned number is a *tested with*. The **MSRV is declared separately** as `rust-version = "1.88"`,
+and a third CI job builds and tests with exactly that toolchain — a declared MSRV nobody checks is a
+promise that quietly ages. 1.88 is not a preference: with 1.86 cargo refuses the tree, because
+`lopdf 0.44` requires it (along with `time`, `time-core` and `weezl`).
 
 Some tests read fixtures from a corpus that is not in this repository; they skip themselves when it
 is absent, so the suite is green either way.

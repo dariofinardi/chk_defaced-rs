@@ -1,6 +1,9 @@
 [package]
 name = "chk_defaced"
-version = "0.3.2"
+version = "0.3.3"
+# Misurata, non stimata: con 1.86 cargo rifiuta l'albero perche' lopdf 0.44 richiede 1.88
+# (e con lui time, time-core, weezl). Verificata compilando e testando con quella toolchain.
+rust-version = "1.88"
 edition = "2021"
 authors = ["Dario Finardi <df@dariofinardi.it>"]
 description = "Detect tampered documents before they reach an LLM: font defacement (the extracted text differs from the glyphs actually drawn) and invisible or cloaked text, in PDF, DOCX and HTML. Deterministic, no LLM, no network."
