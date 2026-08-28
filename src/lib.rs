@@ -29,6 +29,22 @@
 //!
 //! The `html` feature pulls the (heavier) HTML+CSS backend; disable it (`default-features = false`)
 //! when only PDF/DOCX scanning is needed.
+//!
+//! # Feature-gated modules — not visible here
+//!
+//! docs.rs builds the **default** features only, so four modules are missing from this page even
+//! though they exist. They are the OCR and rendering half of the crate:
+//!
+//! | Module | Feature | What it does |
+//! |---|---|---|
+//! | `specimen` | `ocr-specimen` | Renders a glyph straight from its outline and reads it back, to confirm or **refute** a deterministic finding without rasterising a page |
+//! | `atlas` | `ocr-atlas` | Renders the PDF pages and compares the read text with the extracted one |
+//! | `render` | `render-wry` | Renders a DOCX in a real webview — the positional attack a global char→char map cannot represent |
+//! | `glyph` | `ocr-atlas` | Glyph-level helpers shared by those paths |
+//!
+//! Build them with e.g. `--features ocr-atlas,ocr-specimen`; they need Tesseract and (for `atlas`)
+//! pdfium. What each one costs, where the artefacts come from and which environment variables are
+//! read is in [BUILD.md](https://github.com/dariofinardi/chk_defaced-rs/blob/main/BUILD.md).
 
 // `chunks_exact_to_as_chunks` (clippy 1.98) suggerisce `as_chunks::<N>()`, stabile solo da Rust 1.88:
 // applicarlo alzerebbe in silenzio la toolchain minima richiesta, e per giunta in una patch release.

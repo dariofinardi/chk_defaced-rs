@@ -42,9 +42,25 @@ The core is **pure Rust** and **offline** by default; OCR/rendering are opt-in.
 
 ## Build
 
-> Feature matrix, native dependencies (Tesseract, tessdata, pdfium, webview), environment variables,
-> per-platform status, the full dependency inventory with licences, and what `cargo audit` reports
-> and why: **[BUILD.md](BUILD.md)**.
+```bash
+cargo add chk_defaced          # library
+cargo install chk_defaced      # CLI
+```
+
+**The default build is pure Rust**: no Tesseract to compile, no pdfium to fetch, no GUI toolkit.
+Every native dependency sits behind an opt-in feature, and the deterministic scan — the part that
+catches font defacement without OCR — needs none of them.
+
+Building the optional paths (Tesseract OCR, pdfium page rendering, the DOCX webview) needs a few
+artefacts that are not bundled. **[BUILD.md](https://github.com/dariofinardi/chk_defaced-rs/blob/main/BUILD.md)** covers all of it: the feature matrix
+with the native cost of each, where Tesseract / `traineddata` / pdfium come from, every environment
+variable the crate reads, per-platform status, the dependency inventory with licences, and which
+`cargo audit` advisories are actually in the default graph.
+
+> **Reading this on crates.io or docs.rs?** Both show only the default feature set, so the OCR and
+> rendering modules (`atlas`, `specimen`, `render`, `glyph`) are invisible there — they exist, they
+> are just feature-gated. The full picture, including how to build them, is on
+> **[GitHub](https://github.com/dariofinardi/chk_defaced-rs/blob/main/README.md)**.
 
 ```sh
 cargo build --release

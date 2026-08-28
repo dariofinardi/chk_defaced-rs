@@ -1,9 +1,9 @@
 [package]
 name = "chk_defaced"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Dario Finardi <df@dariofinardi.it>"]
-description = "Detect 'defaced' documents: verify the coherence of the fonts used to render text (PDF, DOCX, HTML+CSS) and build a JSON index of the system fonts' cmaps."
+description = "Detect tampered documents before they reach an LLM: font defacement (the extracted text differs from the glyphs actually drawn) and invisible or cloaked text, in PDF, DOCX and HTML. Deterministic, no LLM, no network."
 license = "AGPL-3.0-only"
 repository = "https://github.com/dariofinardi/chk_defaced-rs"
 readme = "README.md"

@@ -4,7 +4,35 @@ Formato ispirato a [Keep a Changelog](https://keepachangelog.com/it/1.1.0/); il 
 [SemVer](https://semver.org/lang/it/) con la convenzione dello 0.x, dove **il minor segnala una
 rottura**. Le versioni precedenti alla 0.3.0 sono ricostruibili dalla storia git.
 
-## [0.3.1] — non ancora rilasciata
+## [0.3.2] — non ancora rilasciata
+
+Solo documentazione e metadati: nessun cambio di codice, nessuna rottura.
+
+### Aggiunto
+
+- `BUILD.md`: matrice delle feature con il costo nativo di ciascuna, provenienza di Tesseract /
+  `traineddata` / pdfium / webview, tutte le variabili d'ambiente lette dal crate, stato per
+  piattaforma, inventario delle dipendenze con le licenze, e quali advisory di `cargo audit` sono
+  davvero nel grafo di default.
+- Nella documentazione del crate, l'elenco dei **moduli dietro feature che docs.rs non mostra**
+  (`specimen`, `atlas`, `render`, `glyph`): esistono, ma il builder costruisce solo le feature di
+  default, e chi legge lì non vedeva metà del crate.
+- Nel README, un blocco di orientamento con link **assoluti** a GitHub: su crates.io i riferimenti
+  relativi non portano da nessuna parte.
+
+### Modificato
+
+- `description` del pacchetto: citava solo la coerenza dei font, mentre il crate copre **due** assi
+  speculari — il defacement tipografico e il testo invisibile o camuffato. È il testo che si legge
+  nella ricerca di crates.io, cioè il primo filtro con cui qualcuno decide se il crate gli serve.
+
+### Noto e non risolto
+
+- La ricerca automatica dei `traineddata` ha `aarch64` scritto nel percorso, quindi su Windows x64
+  non trova la directory installata dal binding: serve `TESSDATA_PREFIX` esplicito. Documentato in
+  `BUILD.md`, non ancora corretto.
+
+## [0.3.1] — 2026-08-28
 
 Solo correzioni: nessun cambio di comportamento del rilevamento, nessuna rottura di API.
 
