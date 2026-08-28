@@ -168,16 +168,36 @@ impl FontRegistry {
     /// apparire manomessi dei font onesti. Senza questo controllo il guasto sarebbe **silenzioso** —
     /// nessun errore, solo risposte sbagliate — che in uno strumento d'integrita' e' il modo peggiore
     /// di rompersi. Meglio un errore che dice cosa fare.
+    /// Il formato del file, dedotto da `tool` quando il numero non c'e'.
+    ///
+    /// Un indice anteriore alla numerazione non e' automaticamente anteriore al **formato**: le
+    /// 0.4 costruite prima che questo campo esistesse scrivevano gia' gli hash di `skrifa`, quindi
+    /// sono confrontabili e rifiutarle direbbe una cosa falsa. Il vecchio criterio per versione
+    /// sopravvive qui, ridotto a cio' per cui va bene: leggere i file che non si dichiarano.
+    fn declared_format(&self) -> u32 {
+        if self.hash_format != 0 {
+            return self.hash_format;
+        }
+        let versione = self.tool.rsplit(' ').next().unwrap_or_default();
+        let mut n = versione.split('.').filter_map(|p| p.parse::<u32>().ok());
+        let (maj, min) = (n.next().unwrap_or(0), n.next().unwrap_or(0));
+        if (maj, min) >= (0, 4) {
+            1
+        } else {
+            0
+        }
+    }
+
     fn check_hash_compatibility(&self, path: &Path) -> Result<()> {
-        if self.hash_format == HASH_FORMAT {
+        if self.declared_format() == HASH_FORMAT {
             return Ok(());
         }
         // Il comando suggerito conserva la forma dell'indice: un registro senza cmap e' stato
         // costruito con `--slim`, e rigenerarlo senza cambierebbe cio' che il chiamante aveva.
         let slim = if self.fonts.iter().all(|f| f.cmap.is_none()) { " --slim" } else { "" };
         let rigenera = format!("`chk_defaced build-registry --out {}{}`", path.display(), slim);
-        match self.hash_format {
-            // Nessun numero: il file precede la numerazione, cioe' la 0.4.0, quando gli hash
+        match self.declared_format() {
+            // Nessun numero e nessuna versione utile: il file precede la numerazione, cioe' la 0.4.0, quando gli hash
             // venivano da `ttf-parser`. E' il caso che si incontra aggiornando il crate.
             0 => anyhow::bail!(
                 "il registro {} e' stato costruito da \"{}\": gli hash degli outline erano calcolati con un parser diverso, quindi non sono confrontabili e i font onesti risulterebbero manomessi. Rigeneralo con {}",
@@ -369,6 +389,19 @@ mod compat_tests {
         assert!(msg.contains("build-registry"), "l'errore deve dire cosa fare: {msg}");
         assert!(msg.contains("0.3.3"), "e da quale comando viene il file: {msg}");
         assert!(errore(&registro(0, "")).contains("versione non dichiarata"));
+    }
+
+    /// Il caso che una prova end-to-end ha trovato: un indice costruito da una 0.4 **prima** che il
+    /// campo esistesse porta `tool` giusto e nessun numero. I suoi hash sono gia' quelli di
+    /// `skrifa`: rifiutarlo direbbe una cosa falsa, e costringerebbe a rigenerare 27 MB per niente.
+    #[test]
+    fn un_indice_0_4_senza_il_campo_e_gia_del_formato_corrente() {
+        assert_eq!(registro(0, "chk_defaced 0.4.0").declared_format(), 1);
+        assert!(registro(0, "chk_defaced 0.4.0")
+            .check_hash_compatibility(std::path::Path::new("x.json"))
+            .is_ok());
+        // E il verso vecchio resta chiuso.
+        assert_eq!(registro(0, "chk_defaced 0.3.3").declared_format(), 0);
     }
 
     #[test]

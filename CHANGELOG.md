@@ -32,8 +32,10 @@ accettato in silenzio, perché `(0,9) >= (0,4)` è vero anche se la 0.9 avesse r
 Una versione non può conoscere le rotture future, quindi quel verso era **incopribile per
 costruzione**, e un consumatore vendorizzato doveva mettercisi una guardia propria.
 
-Un file privo del campo si legge come `0` (`serde(default)`), che è esattamente la verità: costruito
-prima che il formato avesse un numero, cioè prima della 0.4.0.
+Un file privo del campo si legge come `0` (`serde(default)`), e in quel caso il formato si deduce da
+`tool` come prima: un indice costruito da una 0.4 **prima** che il campo esistesse porta già gli hash
+di `skrifa`, quindi è confrontabile e rifiutarlo direbbe una cosa falsa. Il vecchio criterio per
+versione sopravvive lì, ridotto a ciò per cui va bene: leggere i file che non si dichiarano.
 
 Senza quella guardia il guasto sarebbe stato **silenzioso** — nessun errore, solo font onesti che
 risultano manomessi — che in uno strumento d'integrità è il modo peggiore di rompersi.
