@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Le build native (Tesseract, pdfium, webview) restano fuori: sono dietro feature
+  # opzionali e richiederebbero toolchain di sistema sul runner. Qui si verifica il
+  # crate che un consumatore ottiene per default, che e' Rust puro.
+
+jobs:
+  check:
+    name: build, test, clippy, doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build
+        run: cargo build --all-targets
+
+      # Le fixture stanno fuori dal repo (../data/...): i test che le usano si
+      # auto-saltano, quelli deterministici girano comunque.
+      - name: test
+        run: cargo test --lib --doc
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # I link rotti nella documentazione si vedono su docs.rs, cioe' sulla pagina
+      # pubblica del crate: qui diventano un errore prima che ci arrivino.
+      - name: doc
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # `--no-default-features` disattiva CLI e HTML: verifica che la libreria resti
+  # utilizzabile da chi la incorpora senza volersi portare dietro clap e scraper.
+  minimal:
+    name: senza feature di default
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --no-default-features
