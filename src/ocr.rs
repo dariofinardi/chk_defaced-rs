@@ -6,7 +6,7 @@
 //!
 //! Backends sit behind a trait so the heavy/native ones are optional:
 //! - [`MockOcr`] — always available, deterministic, for tests.
-//! - [`TesseractOcr`] — feature `ocr-tesseract`, built on the high-level `tesseract5-rs` crate, which
+//! - `TesseractOcr` — feature `ocr-tesseract`, built on the high-level `tesseract5-rs` crate, which
 //!   depends on the `tesseract-55-rs` binding (Tesseract 5.5 + Leptonica 1.85). Requires a native
 //!   Tesseract build and a `tessdata` directory.
 //!

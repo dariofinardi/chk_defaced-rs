@@ -1,10 +1,10 @@
 //! Shared glyph-matching primitives for the defacement detectors ([`crate::pdf_glyph`],
-//! [`crate::docx_glyph`]) and the specimen-OCR escalation ([`crate::specimen`]).
+//! [`crate::docx_glyph`]) and the specimen-OCR escalation (`crate::specimen`, feature `ocr-specimen`).
 //!
 //! Centralizes the **Latin-letter filter** and the **"legitimately identical"** predicate (the
 //! homoglyph / cross-script / NFKD / ASCII-base filters that keep the semantic-replacement checks
 //! false-positive-free). Previously these lived in three near-identical copies; a filter fix in one
-//! could silently miss the others. Outline hashing itself lives in [`crate::font::glyph_outline_hash`]
+//! could silently miss the others. Outline hashing itself lives in `font::glyph_outline_hash`
 //! so the registry builder and the checkers produce directly comparable hashes.
 
 use unicode_normalization::UnicodeNormalization;

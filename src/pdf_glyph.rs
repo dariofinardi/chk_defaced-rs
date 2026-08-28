@@ -157,7 +157,7 @@ use crate::font::glyph_outline_hash;
 use crate::glyphmatch::{legitimately_identical, letter_latin as letter};
 
 /// Per embedded font, the raw font bytes plus the `(claimed_char, glyph_id)` pairs the document
-/// extracts — the input the specimen-OCR escalation ([`crate::specimen`]) needs to recover, by OCR,
+/// extracts — the input the specimen-OCR escalation (`crate::specimen`, feature `ocr-specimen`) needs to recover, by OCR,
 /// what each glyph actually draws and compare it to what is claimed. Same extraction as
 /// [`pdf_outline_scan`] (ToUnicode + Identity CID→GID, and the font's internal Unicode cmap), but it
 /// records the claims instead of cross-referencing outlines, so it catches fonts with no honest anchor.

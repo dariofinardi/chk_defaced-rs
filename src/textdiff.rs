@@ -1,5 +1,5 @@
-//! Dependency-free text-comparison helpers shared by the render-OCR fallbacks (PDF [`crate::atlas`] and
-//! DOCX [`crate::render`]): word-set similarity and aligned word-level substitution detection between the
+//! Dependency-free text-comparison helpers shared by the render-OCR fallbacks (PDF `crate::atlas` and
+//! DOCX `crate::render`): word-set similarity and aligned word-level substitution detection between the
 //! **extracted** text (what a machine reads) and the **visual/OCR** text (what a human sees). A real,
 //! deliberate substitution between the two is the render-level signature of semantic replacement
 //! (variant A3) — including the localized/positional form the deterministic outline checks cannot express.
