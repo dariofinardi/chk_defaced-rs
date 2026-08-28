@@ -702,17 +702,15 @@ pub fn docx_visibility_scan(xml: &str) -> Vec<Finding> {
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"w:rPr" => in_rpr = false,
                 b"w:t" => in_t = false,
-                b"w:r" => {
-                    if run_text > 0 {
-                        // White text on a coloured shading/highlight is visible → not cloaked.
-                        if cur_white && !cur_shaded {
-                            white_chars += run_text;
-                            white_sample.get_or_insert_with(|| sample(&run_str));
-                        }
-                        if cur_tiny {
-                            tiny_chars += run_text;
-                            tiny_sample.get_or_insert_with(|| sample(&run_str));
-                        }
+                b"w:r" if run_text > 0 => {
+                    // White text on a coloured shading/highlight is visible → not cloaked.
+                    if cur_white && !cur_shaded {
+                        white_chars += run_text;
+                        white_sample.get_or_insert_with(|| sample(&run_str));
+                    }
+                    if cur_tiny {
+                        tiny_chars += run_text;
+                        tiny_sample.get_or_insert_with(|| sample(&run_str));
                     }
                 }
                 _ => {}
