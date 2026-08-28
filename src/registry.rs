@@ -70,13 +70,26 @@ impl FontEntry {
     }
 }
 
+/// Formato degli hash degli outline: cambia **solo** quando gli hash smettono di essere
+/// confrontabili, non a ogni release. E' il contratto del file, non la versione del crate — una
+/// 0.4.1 o una 0.5 che non tocca il calcolo degli outline non costringe a rigenerare l'indice.
+///
+/// | valore | significato |
+/// |---|---|
+/// | `0` | campo assente: registro anteriore alla numerazione, cioe' costruito prima della 0.4.0 |
+/// | `1` | `skrifa`, con la chiusura del contorno normalizzata (dalla 0.4.0) |
+pub const HASH_FORMAT: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FontRegistry {
-    /// `chk_defaced <versione>` che ha costruito il registro. **Vale come marcatore di
-    /// compatibilita'**: dalla 0.4.0 gli hash degli outline sono calcolati con `skrifa` invece che
-    /// con `ttf-parser`, e i due parser emettono la stessa curva con un numero di punti diverso
-    /// (misurato: 439 glifi latini su 443 divergenti). Un registro costruito prima **non e'
-    /// confrontabile** e va rigenerato con `build-registry`.
+    /// Vedi [`HASH_FORMAT`]: e' **questo** a dire se gli hash sono confrontabili, non `tool`.
+    /// Assente nei registri anteriori alla 0.4.0, che `serde` legge come `0`.
+    #[serde(default)]
+    pub hash_format: u32,
+    /// `chk_defaced <versione>` che ha costruito il registro: **provenienza e diagnostica**. Sta nel
+    /// messaggio d'errore, dove serve a capire quale comando ha prodotto il file da rigenerare, e
+    /// non e' piu' il criterio di compatibilita': quello dipendeva dal layout di una stringa libera
+    /// e non sapeva esprimere «piu' recente di quel che so confrontare».
     pub tool: String,
     pub source_dir: String,
     pub count: usize,
@@ -122,6 +135,7 @@ impl FontRegistry {
             }
         }
         Ok(FontRegistry {
+            hash_format: HASH_FORMAT,
             tool: format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
             source_dir: dir.display().to_string(),
             count: fonts.len(),
@@ -155,21 +169,41 @@ impl FontRegistry {
     /// nessun errore, solo risposte sbagliate — che in uno strumento d'integrita' e' il modo peggiore
     /// di rompersi. Meglio un errore che dice cosa fare.
     fn check_hash_compatibility(&self, path: &Path) -> Result<()> {
-        const PRIMA_VERSIONE_COMPATIBILE: (u32, u32) = (0, 4);
-        // `tool` vale "chk_defaced <versione>"; un registro senza il campo e' anteriore a tutto.
-        let versione = self.tool.rsplit(' ').next().unwrap_or_default();
-        let mut n = versione.split('.').filter_map(|p| p.parse::<u32>().ok());
-        let (maj, min) = (n.next().unwrap_or(0), n.next().unwrap_or(0));
-        if (maj, min) >= PRIMA_VERSIONE_COMPATIBILE {
+        if self.hash_format == HASH_FORMAT {
             return Ok(());
         }
-        anyhow::bail!(
-            "il registro {} e' stato costruito da \"{}\": gli hash degli outline erano calcolati con un parser diverso, quindi non sono confrontabili e i font onesti risulterebbero manomessi. Rigeneralo con `chk_defaced build-registry --out {}{}`",
-            path.display(),
-            if self.tool.is_empty() { "(versione non dichiarata)" } else { &self.tool },
-            path.display(),
-            if self.fonts.iter().all(|f| f.cmap.is_none()) { " --slim" } else { "" }
-        )
+        // Il comando suggerito conserva la forma dell'indice: un registro senza cmap e' stato
+        // costruito con `--slim`, e rigenerarlo senza cambierebbe cio' che il chiamante aveva.
+        let slim = if self.fonts.iter().all(|f| f.cmap.is_none()) { " --slim" } else { "" };
+        let rigenera = format!("`chk_defaced build-registry --out {}{}`", path.display(), slim);
+        match self.hash_format {
+            // Nessun numero: il file precede la numerazione, cioe' la 0.4.0, quando gli hash
+            // venivano da `ttf-parser`. E' il caso che si incontra aggiornando il crate.
+            0 => anyhow::bail!(
+                "il registro {} e' stato costruito da \"{}\": gli hash degli outline erano calcolati con un parser diverso, quindi non sono confrontabili e i font onesti risulterebbero manomessi. Rigeneralo con {}",
+                path.display(),
+                if self.tool.is_empty() { "(versione non dichiarata)" } else { &self.tool },
+                rigenera,
+            ),
+            // Piu' recente di quel che sappiamo confrontare. Questo verso non era esprimibile
+            // finche' il criterio era l'ordinamento di versione: `(0,9) >= (0,4)` accettava un
+            // registro di un formato che questa versione non puo' conoscere.
+            n if n > HASH_FORMAT => anyhow::bail!(
+                "il registro {} dichiara il formato di hash {} ({}), piu' recente del {} che questa versione sa confrontare. Aggiorna chk_defaced, oppure rigeneralo con {}",
+                path.display(),
+                n,
+                self.tool,
+                HASH_FORMAT,
+                rigenera,
+            ),
+            n => anyhow::bail!(
+                "il registro {} dichiara il formato di hash {} ({}), che questa versione non confronta piu'. Rigeneralo con {}",
+                path.display(),
+                n,
+                self.tool,
+                rigenera,
+            ),
+        }
     }
 
     /// Index by file SHA and by identity (family/postscript, lowercased) for fast lookup.
@@ -279,6 +313,7 @@ mod tests {
         // Canonical "Arial": outline hashes a=10, b=20, c=30.
         let canon = FontEntry::from_parsed(Path::new("arial.ttf"), &pf("Arial", &[(0x61, 10), (0x62, 20), (0x63, 30)]), false);
         let reg = FontRegistry {
+            hash_format: HASH_FORMAT,
             tool: String::new(),
             source_dir: String::new(),
             count: 1,
@@ -300,8 +335,9 @@ mod tests {
 mod compat_tests {
     use super::*;
 
-    fn registro(tool: &str) -> FontRegistry {
+    fn registro(hash_format: u32, tool: &str) -> FontRegistry {
         FontRegistry {
+            hash_format,
             tool: tool.to_string(),
             source_dir: String::new(),
             count: 0,
@@ -310,39 +346,59 @@ mod compat_tests {
         }
     }
 
+    fn errore(r: &FontRegistry) -> String {
+        format!("{:#}", r.check_hash_compatibility(std::path::Path::new("x.json")).unwrap_err())
+    }
+
     #[test]
-    fn i_registri_anteriori_alla_0_4_sono_rifiutati() {
-        // Prima della 0.4.0 gli hash venivano da un altro parser: confrontarli farebbe apparire
-        // manomessi dei font onesti, e in silenzio.
-        for tool in ["chk_defaced 0.1.0", "chk_defaced 0.3.3", "chk_defaced 0.2.4", ""] {
-            let err = registro(tool)
+    fn il_formato_corrente_e_accettato() {
+        // E la versione nel `tool` non c'entra piu': provenienza, non criterio.
+        for tool in ["chk_defaced 0.4.0", "chk_defaced 0.4.7", "un fork ribrandizzato 2.1"] {
+            assert!(registro(HASH_FORMAT, tool)
                 .check_hash_compatibility(std::path::Path::new("x.json"))
-                .expect_err("{tool} deve essere rifiutato");
-            let msg = format!("{err:#}");
-            assert!(msg.contains("build-registry"), "l'errore deve dire cosa fare: {msg}");
+                .is_ok());
         }
     }
 
     #[test]
-    fn i_registri_dalla_0_4_in_poi_sono_accettati() {
-        for tool in ["chk_defaced 0.4.0", "chk_defaced 0.4.7", "chk_defaced 1.0.0"] {
-            assert!(registro(tool).check_hash_compatibility(std::path::Path::new("x.json")).is_ok());
+    fn un_registro_senza_numero_e_anteriore_alla_0_4() {
+        // `serde(default)` legge come 0 ogni file costruito prima che il formato avesse un numero:
+        // gli hash venivano da un altro parser, e confrontarli farebbe apparire manomessi dei font
+        // onesti, in silenzio.
+        let msg = errore(&registro(0, "chk_defaced 0.3.3"));
+        assert!(msg.contains("build-registry"), "l'errore deve dire cosa fare: {msg}");
+        assert!(msg.contains("0.3.3"), "e da quale comando viene il file: {msg}");
+        assert!(errore(&registro(0, "")).contains("versione non dichiarata"));
+    }
+
+    #[test]
+    fn un_formato_piu_recente_e_rifiutato() {
+        // Il verso che il criterio per versione non sapeva esprimere: `(0,9) >= (0,4)` accettava un
+        // registro di un formato che quella versione non poteva conoscere.
+        let msg = errore(&registro(HASH_FORMAT + 1, "chk_defaced 9.9.9"));
+        assert!(msg.contains("piu' recente"), "{msg}");
+        assert!(msg.contains("Aggiorna chk_defaced"), "la via d'uscita e' aggiornare: {msg}");
+    }
+
+    #[test]
+    fn un_formato_ritirato_e_rifiutato() {
+        // Fra 0 e HASH_FORMAT non c'e' nulla oggi; il ramo esiste perche' domani ci sara'.
+        if HASH_FORMAT > 1 {
+            let msg = errore(&registro(HASH_FORMAT - 1, "chk_defaced 0.4.0"));
+            assert!(msg.contains("non confronta piu'"), "{msg}");
         }
     }
 
     #[test]
     fn il_comando_suggerito_conserva_lo_slim() {
         // Un registro senza cmap e' stato costruito con --slim: rigenerarlo senza cambierebbe forma.
-        // Serve un registro con almeno una voce priva di cmap: si costruisce dal JSON, cosi' il
-        // test non deve conoscere ogni campo di `FontEntry`.
+        // Si costruisce dal JSON, cosi' il test non deve conoscere ogni campo di `FontEntry` — e
+        // insieme verifica che un file privo di `hash_format` si legga come 0.
         let json = r#"{"tool":"chk_defaced 0.3.3","source_dir":"","count":1,"skipped":[],
             "fonts":[{"path":"a.ttf","collection_index":0,"num_glyphs":1,"units_per_em":1000,
             "file_sha256":"","cmap_sha256":"","cmap_len":0,"outlines":[]}]}"#;
         let r: FontRegistry = serde_json::from_str(json).expect("registro di prova valido");
-        let msg = format!(
-            "{:#}",
-            r.check_hash_compatibility(std::path::Path::new("x.json")).unwrap_err()
-        );
-        assert!(msg.contains("--slim"), "{msg}");
+        assert_eq!(r.hash_format, 0, "un file senza il campo e' anteriore alla numerazione");
+        assert!(errore(&r).contains("--slim"), "{}", errore(&r));
     }
 }
