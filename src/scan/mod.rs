@@ -13,6 +13,24 @@ pub mod docx;
 pub mod html;
 pub mod pdf;
 
+/// Scan an **already-parsed** PDF.
+///
+/// The document-level entry point, for a caller that has loaded the file for
+/// its own reasons and does not want it parsed twice. It is the shape a
+/// pipeline needs: `pdf-extractor-2-md` opens the PDF with lopdf for its own
+/// page classification and hands the same `Document` here, so one parse serves
+/// both. That only works while the two agree on the lopdf version, which is
+/// what the bump in this branch is for.
+pub fn scan_document(
+    doc: &lopdf::Document,
+    label: &str,
+    registry: Option<&FontRegistry>,
+) -> Result<Report> {
+    let mut report = pdf::scan_doc(doc, label, registry)?;
+    report.finalize();
+    Ok(report)
+}
+
 pub fn scan_path(path: &Path, registry: Option<&FontRegistry>) -> Result<Report> {
     let ext = path
         .extension()

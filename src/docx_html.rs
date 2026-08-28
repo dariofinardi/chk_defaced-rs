@@ -251,7 +251,7 @@ fn parse_document_runs(zip: &mut zip::ZipArchive<std::fs::File>, _names: &[Strin
             },
             Ok(Event::Text(e)) => {
                 if in_t {
-                    if let Ok(t) = e.unescape() {
+                    if let Ok(t) = e.xml_content(quick_xml::XmlVersion::Implicit1_0) {
                         text.push_str(&t);
                     }
                 }
@@ -289,7 +289,7 @@ fn attr_off(e: &quick_xml::events::BytesStart) -> bool {
 /// Read an XML attribute value by qualified name.
 fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes().with_checks(false).flatten().find(|a| a.key.as_ref() == key).and_then(|a| {
-        a.unescape_value().ok().map(|v| v.into_owned())
+        a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok().map(|v| v.into_owned())
     })
 }
 
