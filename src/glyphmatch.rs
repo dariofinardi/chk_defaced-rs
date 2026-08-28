@@ -45,6 +45,20 @@ pub fn legitimately_identical(a: char, b: char) -> bool {
     if a.to_string().nfkd().eq(b.to_string().nfkd()) {
         return true;
     }
+    // Legatura tipografica contro una delle sue lettere componenti (`f` vs `ﬁ` / `ﬀ` / `ﬃ` …).
+    // Il confronto NFKD sopra chiede l'uguaglianza delle decomposizioni: "fi" non e' "f", quindi la
+    // legatura passava e ogni PDF impaginato bene produceva finding. Il font disegna la forma
+    // composta e l'estrazione restituisce la lettera base: e' tipografia, non sostituzione semantica.
+    // Misurato: su un documento reale 5 finding High su 8 erano `f` contro ﬀ/ﬁ/ﬂ/ﬃ/ﬄ, e facevano
+    // da schermo agli altri 3. Lo specimen scartava gia' le legature (`is_ligature`), il percorso
+    // deterministico no.
+    let (da, db): (String, String) =
+        (a.to_string().nfkd().collect(), b.to_string().nfkd().collect());
+    let (na, nb) = (da.chars().count(), db.chars().count());
+    if (na > 1 && nb == 1 && da.contains(&db)) || (nb > 1 && na == 1 && db.contains(&da)) {
+        return true;
+    }
+
     // Same ASCII base (ð / đ / ɖ → "d", ø → "o"): confusable variants of one base letter, not a swap.
     if let (Some(x), Some(y)) = (deunicode::deunicode_char(a), deunicode::deunicode_char(b)) {
         if !x.is_empty() && x == y {
@@ -295,5 +309,30 @@ mod specimen_verdict_tests {
         let subs = [('h', 'j'), ('ü', 'k'), ('þ', 'l')];
         let reads = [('h', 'h'), ('ü', 'ü'), ('þ', 'þ')];
         assert_eq!(specimen_verdict(&subs, &reads), SpecimenVerdict::Refuted);
+    }
+}
+
+#[cfg(test)]
+mod ligature_tests {
+    use super::*;
+
+    /// Le legature latine: U+FB00 ﬀ, FB01 ﬁ, FB02 ﬂ, FB03 ﬃ, FB04 ﬄ, FB06 ﬆ.
+    #[test]
+    fn una_legatura_non_e_una_sostituzione() {
+        for lig in ['\u{FB00}', '\u{FB01}', '\u{FB02}', '\u{FB03}', '\u{FB04}'] {
+            assert!(legitimately_identical('f', lig), "f vs {lig:?} deve essere legittimo");
+            assert!(legitimately_identical(lig, 'f'), "e simmetrico");
+        }
+        assert!(legitimately_identical('s', '\u{FB06}'), "st: la legatura inizia per s");
+    }
+
+    #[test]
+    fn il_filtro_non_scusa_gli_scambi_veri() {
+        // Le coppie che il rilevatore deve continuare a vedere.
+        for (a, b) in [('m', 'd'), ('h', 'j'), ('r', 'l'), ('w', 'l'), ('a', 'e')] {
+            assert!(!legitimately_identical(a, b), "{a} vs {b} deve restare una sostituzione");
+        }
+        // Una legatura contro una lettera che non la compone resta un sospetto.
+        assert!(!legitimately_identical('m', '\u{FB01}'), "m non compone 'fi'");
     }
 }
