@@ -189,7 +189,14 @@ pub fn docx_outline_scan(path: &Path) -> Result<OutlineScan> {
             continue;
         }
         let mut letters: Vec<(char, usize)> = tally.by_letter.iter().map(|(c, n)| (*c, *n)).collect();
-        letters.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        // Ordine **totale**: a parita' di conteggio decide il codepoint. Ordinare per il solo
+        // conteggio lascia i pari nell'ordine (casuale) di una HashMap, e con uno scambio simmetrico
+        // -- d<->m, due occorrenze ciascuno -- la direzione della sostituzione cambiava a ogni
+        // esecuzione: cinque chiamate identiche sullo stesso PDF davano cinque mappe diverse, a volte
+        // invertite. Da li' passava `presumed`, quindi la "correzione" offerta a valle non era
+        // riproducibile. NB: questo rende la scelta stabile, non *vera*: con prove simmetriche gli
+        // outline non possono dire quale lettera sia onesta -- serve la conferma a render o specimen.
+        letters.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let (truth, _) = letters[0];
         for (lie, n) in letters.iter().skip(1) {
             if legitimately_identical(truth, *lie) {
@@ -203,12 +210,33 @@ pub fn docx_outline_scan(path: &Path) -> Result<OutlineScan> {
     let mut best: HashMap<char, (char, usize)> = HashMap::new();
     for (&(truth, lie), &n) in &lies {
         let e = best.entry(lie).or_insert((truth, 0));
-        if n > e.1 {
+        // Stesso motivo: a parita' di frequenza vince il codepoint minore, non l'ordine di iterazione.
+        if n > e.1 || (n == e.1 && truth < e.0) {
             *e = (truth, n);
         }
     }
     let mut substitutions: Vec<(char, char)> = best.into_iter().map(|(lie, (truth, _))| (lie, truth)).collect();
     substitutions.sort_unstable();
+
+    // Stessa firma d'artefatto riconosciuta sul percorso PDF: finestra di subset con ToUnicode
+    // sfasato (vedi `glyphmatch::subsetting_window`). Il DOCX incorpora gli stessi font sottoinsieme.
+    let pairs: Vec<(char, char, usize)> = substitutions
+        .iter()
+        .map(|&(lie, truth)| (lie, truth, lies.get(&(truth, lie)).copied().unwrap_or(0)))
+        .collect();
+    if let Some(reason) = crate::glyphmatch::subsetting_window(&pairs) {
+        return Ok(OutlineScan {
+            findings: vec![Finding::new(
+                "DOCX.FONT_SUBSET_WINDOW_ARTIFACT",
+                Severity::Info,
+                Category::Structural,
+                "embedded fonts",
+                reason,
+                0.8,
+            )],
+            substitutions: Vec::new(),
+        });
+    }
 
     let mut findings: Vec<Finding> = lies
         .into_iter()

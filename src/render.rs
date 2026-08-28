@@ -304,13 +304,16 @@ pub fn verify_docx_with_render(
     // (b) phrase OCR ground truth — attach the closest rendered sentence to each affected phrase.
     let ocr_sents = crate::finding::split_sentences(&visual);
     for ph in &mut report.phrases {
+        // Il candidato `presumed` e' ancora legittimo *durante* la verifica: serve ad agganciare la
+        // frase alla sua riga OCR. Viene ritirato dopo, se nulla lo corrobora.
+        let cand = ph.presumed.clone().unwrap_or_default();
         let best = ocr_sents.iter().max_by(|a, b| {
-            let sa = jaccard(&ph.presumed, a).max(jaccard(&ph.extracted, a));
-            let sb = jaccard(&ph.presumed, b).max(jaccard(&ph.extracted, b));
+            let sa = jaccard(&cand, a).max(jaccard(&ph.extracted, a));
+            let sb = jaccard(&cand, b).max(jaccard(&ph.extracted, b));
             sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
         });
         if let Some(s) = best {
-            if jaccard(&ph.presumed, s).max(jaccard(&ph.extracted, s)) >= 0.4 {
+            if jaccard(&cand, s).max(jaccard(&ph.extracted, s)) >= 0.4 {
                 ph.ocr = Some(s.clone());
             }
         }

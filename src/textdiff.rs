@@ -155,6 +155,59 @@ pub fn missing_words(extracted: &str, visual: &str) -> Vec<String> {
     out
 }
 
+/// Da che parte sta il testo letto dal render, per **una** frase: verso ciò che l'estrattore ha
+/// letto, verso la ricostruzione, o nessuna delle due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhraseSide {
+    /// L'OCR somiglia al testo **estratto**: la sostituzione ipotizzata non è avvenuta sulla pagina.
+    Extracted,
+    /// L'OCR somiglia alla **ricostruzione**: la sostituzione è reale e la pagina la mostra.
+    Presumed,
+    /// Differenza sotto il margine: l'OCR non decide.
+    Inconclusive,
+}
+
+/// Margine minimo tra le due somiglianze perché la frase valga come prova.
+///
+/// Il rumore OCR abbassa **entrambi** i lati insieme, quindi non conta il valore assoluto (che è la
+/// ragione per cui una soglia di pagina a 0,9 non scatta quasi mai) ma verso quale dei due si sposta.
+pub const PHRASE_SIDE_MARGIN: f32 = 0.05;
+
+/// Per una frase con verità a terra OCR, decide se corrobora il testo estratto o la ricostruzione.
+pub fn phrase_side(extracted: &str, presumed: &str, ocr: &str) -> PhraseSide {
+    let se = jaccard(ocr, extracted);
+    let sp = jaccard(ocr, presumed);
+    if se > sp + PHRASE_SIDE_MARGIN {
+        PhraseSide::Extracted
+    } else if sp > se + PHRASE_SIDE_MARGIN {
+        PhraseSide::Presumed
+    } else {
+        PhraseSide::Inconclusive
+    }
+}
+
+/// `true` se il render **refuta** le sostituzioni ipotizzate: almeno una frase mostra che la pagina
+/// dice ciò che l'estrattore ha letto, e **nessuna** mostra il contrario.
+///
+/// Serve a togliere l'asimmetria che lasciava tutto `Unconfirmed`: prima si poteva refutare solo con
+/// una somiglianza media di pagina ≥ 0,9, irraggiungibile col rumore OCR, e così mezz'ora di render
+/// non salvava un documento pulito. Se il render legge *quella* parola correttamente in *quella*
+/// posizione, è prova **contro** il finding, non assenza di prova.
+///
+/// Conservativo per costruzione: una singola frase che sta dalla parte della ricostruzione (cioè un
+/// attacco reale, che sulla pagina *si vede*) impedisce la refutazione.
+pub fn ocr_refutes_substitutions(phrases: &[(&str, &str, &str)]) -> bool {
+    let mut for_extracted = 0usize;
+    for (extracted, presumed, ocr) in phrases {
+        match phrase_side(extracted, presumed, ocr) {
+            PhraseSide::Presumed => return false,
+            PhraseSide::Extracted => for_extracted += 1,
+            PhraseSide::Inconclusive => {}
+        }
+    }
+    for_extracted > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +244,63 @@ mod tests {
         assert!(!miss.contains(&"contract".to_string()), "visible words must not be reported: {miss:?}");
         // identical → nothing hidden
         assert!(missing_words("all visible text here", "all visible text here").is_empty());
+    }
+
+    // ---- refutazione per-frase (asimmetria del render) --------------------------------
+
+    /// Le frasi reali del field report: estratto corretto, ricostruzione danneggiata da `h→j`.
+    const EXTR: &str = "Auspichiamo di orchestrare i collegi che decidono";
+    const PRES: &str = "Auspicjiamo di orcjestrare i collegji cje decidono";
+
+    #[test]
+    fn ocr_pulito_sta_col_testo_estratto() {
+        assert_eq!(phrase_side(EXTR, PRES, EXTR), PhraseSide::Extracted);
+    }
+
+    #[test]
+    fn ocr_che_mostra_la_sostituzione_sta_con_la_ricostruzione() {
+        // Un attacco vero si *vede* sulla pagina: il render legge la forma sostituita.
+        assert_eq!(phrase_side(EXTR, PRES, PRES), PhraseSide::Presumed);
+    }
+
+    #[test]
+    fn il_rumore_ocr_non_ribalta_il_verdetto() {
+        // Due parole sbagliate dall'OCR abbassano entrambe le somiglianze, ma non la direzione:
+        // e' esattamente il caso che la soglia di pagina a 0,9 non riusciva a decidere.
+        let rumoroso = "Auspichiamo dl orchestrare i colleql che decidono";
+        assert_eq!(phrase_side(EXTR, PRES, rumoroso), PhraseSide::Extracted);
+    }
+
+    #[test]
+    fn ocr_inutilizzabile_non_decide() {
+        assert_eq!(phrase_side(EXTR, PRES, "xxx yyy zzz"), PhraseSide::Inconclusive);
+    }
+
+    #[test]
+    fn quattro_frasi_pulite_refutano() {
+        // Il caso misurato: 14 pagine instradate, ogni frase letta correttamente dal render.
+        let phrases: Vec<(&str, &str, &str)> = vec![
+            (EXTR, PRES, EXTR),
+            ("che decidono i collegi", "cje decidono i collegji", "che decidono i collegi"),
+            ("orchestrare le attivita", "orcjestrare le attivita", "orchestrare le attivita"),
+            ("Auspichiamo un esito", "Auspicjiamo un esito", "Auspichiamo un esito"),
+        ];
+        assert!(ocr_refutes_substitutions(&phrases));
+    }
+
+    #[test]
+    fn una_sola_frase_a_favore_della_ricostruzione_blocca_la_refutazione() {
+        // Conservativo: un attacco reale non deve essere archiviato perche' le altre frasi sono pulite.
+        let phrases: Vec<(&str, &str, &str)> = vec![
+            (EXTR, PRES, EXTR),
+            ("che decidono i collegi", "cje decidono i collegji", "cje decidono i collegji"),
+        ];
+        assert!(!ocr_refutes_substitutions(&phrases));
+    }
+
+    #[test]
+    fn senza_prove_non_si_refuta() {
+        assert!(!ocr_refutes_substitutions(&[]));
+        assert!(!ocr_refutes_substitutions(&[(EXTR, PRES, "xxx yyy")]), "OCR inconcludente non refuta");
     }
 }

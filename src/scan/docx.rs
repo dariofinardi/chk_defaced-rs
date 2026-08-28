@@ -60,7 +60,7 @@ fn extract_text_and_vanish(xml: &str, text: &mut String, vanish: &mut usize) {
             }
             Ok(Event::Text(e)) => {
                 if in_t {
-                    if let Ok(t) = e.unescape() {
+                    if let Ok(t) = e.xml_content(quick_xml::XmlVersion::Implicit1_0) {
                         text.push_str(&t);
                     }
                 }

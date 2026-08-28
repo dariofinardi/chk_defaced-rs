@@ -322,7 +322,14 @@ pub fn pdf_outline_scan_doc(doc: &Document) -> OutlineScan {
             continue;
         }
         let mut letters: Vec<(char, usize)> = tally.iter().map(|(c, n)| (*c, *n)).collect();
-        letters.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        // Ordine **totale**: a parita' di conteggio decide il codepoint. Ordinare per il solo
+        // conteggio lascia i pari nell'ordine (casuale) di una HashMap, e con uno scambio simmetrico
+        // -- d<->m, due occorrenze ciascuno -- la direzione della sostituzione cambiava a ogni
+        // esecuzione: cinque chiamate identiche sullo stesso PDF davano cinque mappe diverse, a volte
+        // invertite. Da li' passava `presumed`, quindi la "correzione" offerta a valle non era
+        // riproducibile. NB: questo rende la scelta stabile, non *vera*: con prove simmetriche gli
+        // outline non possono dire quale lettera sia onesta -- serve la conferma a render o specimen.
+        letters.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let (truth, _) = letters[0];
         for (lie, n) in letters.iter().skip(1) {
             if legitimately_identical(truth, *lie) {
@@ -336,7 +343,8 @@ pub fn pdf_outline_scan_doc(doc: &Document) -> OutlineScan {
     let mut best: HashMap<char, (char, usize)> = HashMap::new();
     for (&(truth, lie), &n) in &lies {
         let e = best.entry(lie).or_insert((truth, 0));
-        if n > e.1 {
+        // Stesso motivo: a parita' di frequenza vince il codepoint minore, non l'ordine di iterazione.
+        if n > e.1 || (n == e.1 && truth < e.0) {
             *e = (truth, n);
         }
     }
@@ -361,6 +369,26 @@ pub fn pdf_outline_scan_doc(doc: &Document) -> OutlineScan {
                     "uniform alphabetic shift ({shift:+}) across {n} letters — a font-encoding/subsetting artifact (e.g. LaTeX), not a targeted replacement: the extracted text matches what is rendered"
                 ),
                 0.85,
+            )],
+            substitutions: Vec::new(),
+        };
+    }
+
+    // Seconda firma d'artefatto, complementare allo shift uniforme: la finestra di subset con
+    // ToUnicode sfasato (poche coppie rarissime che disegnano lettere contigue).
+    let pairs: Vec<(char, char, usize)> = substitutions
+        .iter()
+        .map(|&(lie, truth)| (lie, truth, lies.get(&(truth, lie)).copied().unwrap_or(0)))
+        .collect();
+    if let Some(reason) = crate::glyphmatch::subsetting_window(&pairs) {
+        return OutlineScan {
+            findings: vec![Finding::new(
+                "PDF.FONT_SUBSET_WINDOW_ARTIFACT",
+                Severity::Info,
+                Category::Structural,
+                "embedded fonts",
+                reason,
+                0.8,
             )],
             substitutions: Vec::new(),
         };
@@ -429,5 +457,24 @@ mod tests {
         assert_eq!(m.gid(1), Some(5));
         assert_eq!(m.gid(2), Some(300));
         assert_eq!(m.gid(9), None); // out of range
+    }
+
+    /// La mappa delle sostituzioni deve essere **riproducibile**: prima non lo era, perche' a parita'
+    /// di conteggio la direzione veniva decisa dall'ordine di iterazione di una HashMap (randomizzato
+    /// per processo). Cinque chiamate identiche sullo stesso PDF davano cinque mappe diverse, a volte
+    /// invertite -- e da quella mappa nasce la ricostruzione `presumed` consegnata a valle.
+    #[test]
+    fn la_mappa_delle_sostituzioni_e_riproducibile() {
+        use std::path::PathBuf;
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../data/attack-fixtures/replaced.pdf");
+        if !p.exists() {
+            return;
+        }
+        let primo = super::pdf_outline_scan(&p).expect("scan").substitutions;
+        assert!(!primo.is_empty(), "la fixture deve produrre sostituzioni");
+        for i in 1..8 {
+            let altro = super::pdf_outline_scan(&p).expect("scan").substitutions;
+            assert_eq!(primo, altro, "esecuzione {i}: mappa diversa dalla prima");
+        }
     }
 }

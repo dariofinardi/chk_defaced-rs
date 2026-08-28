@@ -137,7 +137,7 @@ fn xml_text(xml: &str, local: &str) -> Option<String> {
                 }
             }
             Ok(Event::Text(e)) if capture => {
-                if let Ok(t) = e.unescape() {
+                if let Ok(t) = e.xml_content(quick_xml::XmlVersion::Implicit1_0) {
                     out.push_str(&t);
                 }
             }

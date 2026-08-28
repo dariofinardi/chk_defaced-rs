@@ -109,13 +109,16 @@ pub fn verify_with_render(report: &mut Report, pdf: &Path, pdfium_dir: &Path, oc
     let ocr_text: String = pages.iter().map(|p| p.visual.as_str()).collect::<Vec<_>>().join("\n");
     let ocr_sents = crate::finding::split_sentences(&ocr_text);
     for ph in &mut report.phrases {
+        // Il candidato `presumed` e' ancora legittimo *durante* la verifica: serve ad agganciare la
+        // frase alla sua riga OCR. Viene ritirato dopo, se nulla lo corrobora.
+        let cand = ph.presumed.clone().unwrap_or_default();
         let best = ocr_sents.iter().max_by(|a, b| {
-            let sa = jaccard(&ph.presumed, a).max(jaccard(&ph.extracted, a));
-            let sb = jaccard(&ph.presumed, b).max(jaccard(&ph.extracted, b));
+            let sa = jaccard(&cand, a).max(jaccard(&ph.extracted, a));
+            let sb = jaccard(&cand, b).max(jaccard(&ph.extracted, b));
             sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
         });
         if let Some(s) = best {
-            if jaccard(&ph.presumed, s).max(jaccard(&ph.extracted, s)) >= 0.4 {
+            if jaccard(&cand, s).max(jaccard(&ph.extracted, s)) >= 0.4 {
                 ph.ocr = Some(s.clone());
             }
         }
@@ -142,15 +145,39 @@ pub fn verify_with_render(report: &mut Report, pdf: &Path, pdfium_dir: &Path, oc
             format!("OCR confirms the rendered text diverges from the extracted text: {list}"),
             0.9,
         ));
-    } else if mean_sim >= 0.9 {
-        report.verdict = Some(Verdict::Refuted);
-        for f in report.findings.iter_mut().filter(|f| f.rule.contains("GLYPH_SEMANTIC_REPLACEMENT")) {
-            f.severity = Severity::Info;
-            f.message.push_str(
-                " — OCR-refuted: the rendered page matches the extracted text (the font carries a glyph collision but it is not used on the visible text)",
-            );
-        }
-    } // else: inconclusive OCR → stays Unconfirmed
+    } else {
+        // Due strade indipendenti per refutare. La prima e' la somiglianza media di pagina: bar molto
+        // alto, che il rumore OCR raramente raggiunge. La seconda guarda le singole frasi coinvolte —
+        // se il render legge *quella* parola come l'ha letta l'estrattore, e nessuna frase mostra la
+        // forma sostituita, e' prova **contro** il finding. Senza di essa mezz'ora di render lasciava
+        // tutto `Unconfirmed` e non salvava un documento pulito (field report, PR #1).
+        let evidence: Vec<(&str, &str, &str)> = report
+            .phrases
+            .iter()
+            .filter_map(|ph| Some((ph.extracted.as_str(), ph.presumed.as_deref()?, ph.ocr.as_deref()?)))
+            .collect();
+        let by_phrase = crate::textdiff::ocr_refutes_substitutions(&evidence);
+        let reason = if mean_sim >= 0.9 {
+            Some("the rendered page matches the extracted text")
+        } else if by_phrase {
+            Some("the rendered text of every affected sentence matches what was extracted")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            report.verdict = Some(Verdict::Refuted);
+            for f in report.findings.iter_mut().filter(|f| f.rule.contains("GLYPH_SEMANTIC_REPLACEMENT")) {
+                f.severity = Severity::Info;
+                f.message.push_str(&format!(
+                    " — OCR-refuted: {reason} (the font carries a glyph collision but it is not used on the visible text)"
+                ));
+            }
+        } // else: OCR davvero inconcludente → resta Unconfirmed
+    }
+
+    // Il verdetto e' deciso: se non e' Confirmed, la ricostruzione non ha corroborazione e va ritirata
+    // qui, non solo in `finalize`, perche' l'invariante valga anche per chi chiama la libreria a mano.
+    report.withdraw_uncorroborated_presumed();
     Ok(())
 }
 

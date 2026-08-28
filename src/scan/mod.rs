@@ -13,6 +13,24 @@ pub mod docx;
 pub mod html;
 pub mod pdf;
 
+/// Scan an **already-parsed** PDF.
+///
+/// The document-level entry point, for a caller that has loaded the file for
+/// its own reasons and does not want it parsed twice. It is the shape a
+/// pipeline needs: `pdf-extractor-2-md` opens the PDF with lopdf for its own
+/// page classification and hands the same `Document` here, so one parse serves
+/// both. That only works while the two agree on the lopdf version, which is
+/// what the bump in this branch is for.
+pub fn scan_document(
+    doc: &lopdf::Document,
+    label: &str,
+    registry: Option<&FontRegistry>,
+) -> Result<Report> {
+    let mut report = pdf::scan_doc(doc, label, registry)?;
+    report.finalize();
+    Ok(report)
+}
+
 pub fn scan_path(path: &Path, registry: Option<&FontRegistry>) -> Result<Report> {
     let ext = path
         .extension()
@@ -47,8 +65,17 @@ pub fn scan_path_with_ocr(
 
     let already = report.findings.iter().any(|f| f.rule.contains("GLYPH_SEMANTIC_REPLACEMENT"));
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    if !already && matches!(ext.as_str(), "pdf" | "docx") {
-        if let Ok(extra) = crate::specimen::specimen_scan_path(path, ocr) {
+    if matches!(ext.as_str(), "pdf" | "docx") {
+        if already {
+            // Il segnale deterministico c'e': lo specimen serve a **verificarlo**. Prima veniva
+            // saltato proprio qui, cioe' nell'unico caso in cui esiste un finding da smentire, e la
+            // sua prova d'accordo andava persa. Costa in proporzione ai glifi distinti, non alle
+            // pagine, quindi puo' girare come conferma ordinaria.
+            if let Err(e) = crate::specimen::confirm_with_specimen(path, &mut report, ocr) {
+                eprintln!("[warn] specimen confirmation skipped: {e:#}");
+            }
+        } else if let Ok(extra) = crate::specimen::specimen_scan_path(path, ocr) {
+            // Nessun segnale: escalation per il font senza ancora onesta.
             report.findings.extend(extra);
         }
     }

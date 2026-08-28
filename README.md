@@ -356,6 +356,83 @@ words are the residual false-positive risk, bounded by the ≥4-alphabetic-word 
 
 ---
 
+## Coverage map: caught, possibly missed, structurally open
+
+Three lists, kept honest: what the tool is **verified** to catch, what it may **miss**, and the
+**document-structure weaknesses** that remain open. Everything below is backed by a measurement on the
+evaluation corpora (10 attack fixtures, 32 clean documents, plus 23 real-world documents from a
+downstream consumer); where a claim is an inference from the code rather than a measurement, it says so.
+
+### Covered
+
+| Case | Evidence |
+|---|---|
+| **A3 semantic replacement** — an embedded glyph draws one letter and is extracted as another | Deterministic outline cross-reference, no OCR. 9/10 attack fixtures flagged, 19 `High` findings; unchanged across every refactor. |
+| **Custom font with no honest anchor** (every code remapped 1:1, no in-document collision forms) | Specimen-OCR escalation: the glyph is rendered from its outline and read back. Validated 5/5 on planted lies with zero honest mappings. |
+| **Rendered/extracted divergence** | `--ocr` renders the pages and compares. Confirms *or* refutes: a real word substitution confirms; every affected sentence reading as extracted refutes. |
+| **PUA, zero-width, BiDi override, garbled `ToUnicode`** | Extracted-text scan, deterministic. |
+| **Hidden text** — DOCX white/tiny runs, PDF invisible render mode, searchable-scan OCR layers | DOCX signals are reliable and quote the injected text; PDF colour/geometry signals are `Medium` candidates confirmed by render-OCR. |
+| **Subset font with a shifted `ToUnicode`** (few pairs, each rare, drawing consecutive letters) | Recognised as an artifact, not an attack: `FONT_SUBSET_WINDOW_ARTIFACT`. Measured on a real 126-page deck — 8 `High` → 1 `Info`, and the document stops being routed to OCR downstream. |
+| **Typographic ligatures** (`f` vs `ﬀ ﬁ ﬂ ﬃ ﬄ`) | No longer reported. See [Ligatures](#ligatures-are-decoded-correctly-in-extraction). |
+| **Reproducibility** | The recovered substitution map is deterministic: same document, five runs, one fingerprint (it was four distinct ones before). |
+
+### Possibly missed — critical
+
+| Case | Why | Status |
+|---|---|---|
+| **Symmetric swap** (two letters exchanged, each equally frequent) | With balanced evidence the outline cross-reference cannot tell which letter is the honest one. The choice is now *stable* (lowest codepoint wins) but **stability is not truth**: half the time it names the wrong direction. | The collision is still reported; only the direction may be wrong. Resolving it requires evidence from outside the outlines — render-OCR or specimen. |
+| **A ligature used as the replacement** (`f` shown as `ﬁ`) | Deliberately excluded to stop the false positives that ligatures produce in every well-typeset PDF. | Accepted trade-off, not an oversight. The same compromise the specimen path has made since v1 (`is_ligature`). |
+| **An attack fired on few instances of a character** | The word-level specimen maps one glyph per character, but a defacement is exactly the case where the same character has *two* glyphs — the honest one nearly everywhere, the lying one in a few places. Rendering the first makes the word look correct. | Measured, not assumed: on the attack fixture 23 words of 27 sided with the extracted text under **both** the direct and the inverse map. Seeing a fired attack needs the per-instance glyph ids from the content stream. |
+| **Off-page / clipped text** | Not detected deterministically: it needs a complete nested-CTM / Form-XObject geometry engine, which a partial interpreter gets wrong on real PDFs. | By design — the render-OCR pass catches it instead, so it is missed in deterministic-only runs. |
+| **Non-Latin scripts** | The outline cross-reference is scoped to Latin (see [Character coverage](#character-coverage-v10)). | Known scope limit. |
+
+### Structurally open — document-level weaknesses
+
+These are defects in how the document is *parsed*, so they can produce both false positives and blind
+spots regardless of the detection rules layered on top.
+
+1. **Multi-character `ToUnicode` values are truncated to their first code unit.** `parse_tounicode`
+   reads `h.get(0..4)` — one UTF-16 unit — so a code mapped to `<00660069>` (`"fi"`) is recorded as
+   `f`. This is the root cause of the ligature false positives: the ligature glyph appeared to be
+   "drawn as `ﬁ` but extracted as `f`". The ligature filter treats the symptom; a code whose mapping
+   is a *sequence* should be excluded from the single-letter collision analysis instead of being
+   silently shortened.
+2. **Form XObjects are given the geometry of an image.** A `Do` operator records the CTM-transformed
+   unit square as the painted region. That is correct for images, whose space *is* the unit square, but
+   wrong for form XObjects, which carry their own `/BBox` and `/Matrix`. Slide decks routinely wrap
+   pictures in forms, so the painted-region map can be misplaced. (Inference from the code, not yet
+   measured.)
+3. **An unknown background becomes a certain white.** In the painter model the local background is the
+   topmost region under the run's centre *with area ≤ 0.9 × page*, a guard meant to ignore mis-scaled
+   full-page fills. A full-bleed photograph exceeds it, is discarded, and the fallback assumes a white
+   page — so white type over a dark image reads as text camouflaged against its background. This is
+   the reported `INVISIBLE_TEXT_COLOR` false positive on a slide title. The machinery for a safer
+   answer already exists: the image-coverage grid used for searchable-scan detection knows how much of
+   the page is covered by images and could simply disable the colour axis.
+
+### Ligatures are decoded correctly in extraction
+
+A ligature is a **typographic** substitution — one glyph drawing `f`+`f`+`i` — not a semantic one, and
+it must survive extraction as its component letters. Verified on two real documents typeset with
+ligature glyphs (the same fonts whose `ﬃ`/`ﬁ` glyphs the detector sees), extracted through the
+pipeline's own extractor:
+
+| | Italian document | English document |
+|---|---|---|
+| residual `U+FB00`–`U+FB06` characters | **none** | **none** |
+| words containing `fi`/`ff`/`fl`, correctly spelled | **1002** | **163** |
+| examples | `Efficienza`, `Affidabile`, `Ufficiale`, `Affinamento`, `differenza`, `amplificare` | `coefficients`, `effectiveness`, `exfiltrating`, `significant` |
+
+So `Efficienza` extracts as nine characters, not as `E`+`ﬃ`+`cienza` and not as the truncated
+`Eficienza`; likewise `coefficients` keeps its `ffi`. Text handed to a Markdown/RAG pipeline is
+character-faithful for ligatures.
+
+⚠️ The truncation described in point 1 above affects **`chk_defaced`'s own `ToUnicode` parser**, used to
+build the glyph-collision map — not the text extraction. The two are separate paths, and only the
+former was wrong.
+
+---
+
 ## Honest limitations (and roadmap)
 
 This v1 is deliberately **conservative** to avoid false positives:
@@ -367,8 +444,12 @@ This v1 is deliberately **conservative** to avoid false positives:
   outline reachable from two different extracted letters is the tell, checked deterministically for both
   PDF and DOCX. To keep that precise on real documents, a collision is **not** flagged when the two
   letters are legitimate glyph-sharing rather than tampering: TR39 confusables, **different scripts**
-  (Latin `b` / Greek `β` / Cyrillic `в`), or **compatibility-equivalent** encodings (Arabic base ↔
-  presentation forms, via NFKD). The ToUnicode arm of the check runs only for **Type0/CID** fonts, where
+  (Latin `b` / Greek `β` / Cyrillic `в`), **compatibility-equivalent** encodings (Arabic base ↔
+  presentation forms, via NFKD), or a **typographic ligature against one of its component letters**
+  (`f` vs `ﬀ ﬁ ﬂ ﬃ ﬄ` — the font draws the composed form and extraction returns the base letter). The
+  last one is a deliberate trade-off, measured: on a real document five of eight `High` findings were
+  ligatures, and they also masked the three that mattered. It means a replacement *made of* a ligature
+  is not reported — see [Coverage map](#coverage-map-caught-possibly-missed-structurally-open). The ToUnicode arm of the check runs only for **Type0/CID** fonts, where
   a content-stream code is actually a glyph id (a simple font routes code → glyph through `/Encoding`).
 - **v1.0 is scoped to the Latin script.** The outline cross-reference only considers Latin letters
   (basic + accented + extended — all European languages); other scripts (Greek/Cyrillic/Arabic/CJK) are
@@ -560,6 +641,23 @@ Independent research on the same attack class:
   (LayerX) and [BleepingComputer's coverage](https://www.bleepingcomputer.com/news/security/new-font-rendering-trick-hides-malicious-commands-from-ai-tools/)
   — the browser/HTML variant: a custom font acts as a cipher key so the rendered text and the DOM text
   diverge.
+
+## Credits
+
+Author: **Dario Finardi** (<df@dariofinardi.it>).
+
+`chk_defaced` grew out of the document-integrity work for **[Edito](https://edito-pdf.com)**, the
+GDPR-native document intelligence platform built by **Jugaad s.r.l.** (Italy). Edito's pipeline
+ingests documents on behalf of its users, which makes the gap between *what a reader sees* and *what a
+machine extracts* an operational problem rather than a theoretical one: a tampered font or an invisible
+run reaches the model, not the reader. The screening had to be **deterministic and LLM-free** — an
+integrity check must not itself depend on the component it protects — and cheap enough to run on every
+ingested file.
+
+The crate is released independently of that product, under AGPL-3.0-only, so the check can be reused
+at any PDF/DOCX/HTML → LLM ingestion boundary.
+
+---
 
 ## License
 

@@ -5,12 +5,25 @@
 //! Background: "What you see is not what your AI reads"
 //! <https://dariofinardi.it/what-you-see-is-not-what-your-ai-reads-c3fed388d3bc>.
 //!
+//! Author: **Dario Finardi**. Developed as part of the document-integrity work for
+//! **Edito** (<https://edito-pdf.com>), the GDPR-native document intelligence platform by
+//! **Jugaad s.r.l.** (Italy). Released independently under AGPL-3.0-only.
+//!
 //! Minimal embedding example:
 //! ```no_run
 //! let report = chk_defaced::scan::scan_path(std::path::Path::new("contract.pdf"), None)?;
 //! if report.findings.iter().any(|f| f.severity >= chk_defaced::finding::Severity::High) {
 //!     eprintln!("document may be defaced: extracted text could diverge from what is rendered");
 //! }
+//! # Ok::<(), anyhow::Error>(())
+//! ```
+//!
+//! Se il PDF e' **gia' caricato** — una pipeline che lo apre per conto suo non deve farlo
+//! parsare due volte — l'ingresso e' [`scan::scan_document`], che prende il `lopdf::Document`
+//! esistente. Vale finche' chiamante e crate concordano sulla versione di `lopdf`:
+//! ```no_run
+//! let doc = lopdf::Document::load("contract.pdf")?;
+//! let report = chk_defaced::scan::scan_document(&doc, "contract.pdf", None)?;
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 //!
