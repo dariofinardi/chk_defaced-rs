@@ -58,6 +58,19 @@ quindi resta coerente con sé stesso. A rompersi è solo il percorso `--registry
 - La bbox del glifo è **misurata dal tracciato**: `skrifa` non espone `glyph_bounding_box`. È anche
   più fedele della bbox dichiarata nell'header, che può essere larga o sbagliata.
 
+### Corretto
+
+- **L'ordine dei finding è ora riproducibile.** `subset_families` era una `HashMap` iterata per
+  emettere `PDF.MANY_SUBSETS`, e Rust semina l'hasher a caso a ogni processo: tre esecuzioni dello
+  stesso binario sullo stesso documento davano due ordini diversi. Nessun verdetto cambiava — il
+  contenuto era identico, si spostava la riga — ma un rumore che si muove a ogni corsa costringe a
+  separare a mano il cambiamento vero dal riordino quando si confrontano due release con un diff, ed
+  è il modo in cui una regressione passa inosservata. `BTreeMap`/`BTreeSet` lo chiude, e non è nel
+  percorso caldo. Segnalato da una verifica a valle.
+
+  È la seconda volta in questa serie che l'ordine di iterazione di una `HashMap` produce
+  irriproducibilità: la prima era la direzione delle sostituzioni, corretta nella 0.3.0.
+
 ### Noto e non risolto
 
 - `fxhash` è *unmaintained* (RUSTSEC-2025-0057) ed è nel grafo di **default**, ma indirettamente:

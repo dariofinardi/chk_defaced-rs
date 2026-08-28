@@ -2,7 +2,7 @@
 //! `/Encoding /Differences` and embedded font programs (`FontFile2/3`). Deterministic coherence
 //! checks (PUA, modified cmap vs registry, forged identity, multiple subsets = variant B).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -168,7 +168,12 @@ pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) ->
     if !meta.is_empty() {
         report.metadata = Some(meta);
     }
-    let mut subset_families: HashMap<String, HashSet<String>> = HashMap::new();
+    // BTree e non Hash: questa mappa viene **iterata** per emettere i finding `PDF.MANY_SUBSETS`, e
+    // Rust semina l'hasher a caso a ogni processo. Con una HashMap cinque esecuzioni dello stesso
+    // binario sullo stesso documento producevano cinque ordini diversi: nessun verdetto cambiava,
+    // ma confrontare due release con un diff diventava rumoroso, ed e' il modo in cui una
+    // regressione passa inosservata. Ordinare per famiglia costa nulla qui.
+    let mut subset_families: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut examined = 0usize;
 
     for obj in doc.objects.values() {
@@ -295,4 +300,38 @@ pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) ->
 
     report.fonts_examined = examined;
     Ok(report)
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    /// L'ordine dei finding dev'essere **riproducibile**: `subset_families` viene iterata per
+    /// emettere `PDF.MANY_SUBSETS`, e con una `HashMap` Rust semina l'hasher a caso a ogni processo.
+    /// Il contenuto era identico ma la riga si spostava, e un rumore che si muove a ogni corsa
+    /// costringe a separare a mano il cambiamento vero dal riordino quando si confrontano due
+    /// release con un diff — che è il modo in cui una regressione passa inosservata.
+    ///
+    /// Qui si verifica la proprietà alla fonte: la struttura ordinata restituisce sempre la stessa
+    /// sequenza, a prescindere dall'ordine di inserimento.
+    #[test]
+    fn le_famiglie_di_subset_escono_in_ordine_stabile() {
+        use std::collections::{BTreeMap, BTreeSet};
+        let inserimenti = [
+            vec![("Calibri", "AAAAAA"), ("Arial", "BBBBBB"), ("Times", "CCCCCC")],
+            vec![("Times", "CCCCCC"), ("Calibri", "AAAAAA"), ("Arial", "BBBBBB")],
+            vec![("Arial", "BBBBBB"), ("Times", "CCCCCC"), ("Calibri", "AAAAAA")],
+        ];
+        let mut sequenze = Vec::new();
+        for ordine in &inserimenti {
+            let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for (fam, tag) in ordine {
+                m.entry(fam.to_string()).or_default().insert(tag.to_string());
+            }
+            sequenze.push(m.keys().cloned().collect::<Vec<_>>());
+        }
+        assert!(
+            sequenze.windows(2).all(|w| w[0] == w[1]),
+            "l'ordine di emissione dipende dall'inserimento: {sequenze:?}"
+        );
+        assert_eq!(sequenze[0], ["Arial", "Calibri", "Times"]);
+    }
 }
