@@ -444,8 +444,12 @@ This v1 is deliberately **conservative** to avoid false positives:
   outline reachable from two different extracted letters is the tell, checked deterministically for both
   PDF and DOCX. To keep that precise on real documents, a collision is **not** flagged when the two
   letters are legitimate glyph-sharing rather than tampering: TR39 confusables, **different scripts**
-  (Latin `b` / Greek `β` / Cyrillic `в`), or **compatibility-equivalent** encodings (Arabic base ↔
-  presentation forms, via NFKD). The ToUnicode arm of the check runs only for **Type0/CID** fonts, where
+  (Latin `b` / Greek `β` / Cyrillic `в`), **compatibility-equivalent** encodings (Arabic base ↔
+  presentation forms, via NFKD), or a **typographic ligature against one of its component letters**
+  (`f` vs `ﬀ ﬁ ﬂ ﬃ ﬄ` — the font draws the composed form and extraction returns the base letter). The
+  last one is a deliberate trade-off, measured: on a real document five of eight `High` findings were
+  ligatures, and they also masked the three that mattered. It means a replacement *made of* a ligature
+  is not reported — see [Coverage map](#coverage-map-caught-possibly-missed-structurally-open). The ToUnicode arm of the check runs only for **Type0/CID** fonts, where
   a content-stream code is actually a glyph id (a simple font routes code → glyph through `/Encoding`).
 - **v1.0 is scoped to the Latin script.** The outline cross-reference only considers Latin letters
   (basic + accented + extended — all European languages); other scripts (Greek/Cyrillic/Arabic/CJK) are

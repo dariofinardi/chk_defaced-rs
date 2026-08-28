@@ -18,6 +18,15 @@
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 //!
+//! Se il PDF e' **gia' caricato** — una pipeline che lo apre per conto suo non deve farlo
+//! parsare due volte — l'ingresso e' [`scan::scan_document`], che prende il `lopdf::Document`
+//! esistente. Vale finche' chiamante e crate concordano sulla versione di `lopdf`:
+//! ```no_run
+//! let doc = lopdf::Document::load("contract.pdf")?;
+//! let report = chk_defaced::scan::scan_document(&doc, "contract.pdf", None)?;
+//! # Ok::<(), anyhow::Error>(())
+//! ```
+//!
 //! The `html` feature pulls the (heavier) HTML+CSS backend; disable it (`default-features = false`)
 //! when only PDF/DOCX scanning is needed.
 
