@@ -254,7 +254,7 @@ fn print_human(r: &Report) {
         return;
     }
     let mut findings: Vec<_> = r.findings.iter().collect();
-    findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+    findings.sort_by_key(|f| std::cmp::Reverse(f.severity));
     for f in findings {
         println!(
             "  [{:?}] {} — {} ({}) conf={:.2}",
