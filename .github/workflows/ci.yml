@@ -18,7 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Toolchain FISSATA sul job che blocca: `-D warnings` su `stable` significa che una
+      # nuova release di clippy puo' rompere la CI senza che il codice sia cambiato. Qui il
+      # verdetto dipende solo da cio' che scriviamo noi. Va alzata deliberatamente, ed e' un
+      # "testato con", non la MSRV (che il crate non dichiara ancora).
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy
 
@@ -44,6 +48,21 @@ jobs:
         run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # Contraltare del job fissato: gira sulla `stable` del giorno e **avvisa senza bloccare**.
+  # Serve a vedere i lint nuovi quando escono invece che quando aggiorniamo il pin, senza che
+  # decidano loro se una PR e' mergiabile. Se diventa rosso, si valuta e si alza il pin.
+  lint-stable:
+    name: clippy su stable (non bloccante)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
 
   # `--no-default-features` disattiva CLI e HTML: verifica che la libreria resti
   # utilizzabile da chi la incorpora senza volersi portare dietro clap e scraper.

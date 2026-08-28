@@ -30,6 +30,12 @@ Solo correzioni: nessun cambio di comportamento del rilevamento, nessuna rottura
 - Integrazione continua (`.github/workflows/ci.yml`): build, test, clippy con `-D warnings` e
   `cargo doc` con `RUSTDOCFLAGS=-D warnings`, più un job che verifica il build
   `--no-default-features`. Tutti verdi al momento dell'introduzione.
+
+  Il job che **blocca** usa una toolchain **fissata** (1.98.0): con `-D warnings` su `stable` una
+  nuova release di clippy può rompere la CI senza che il codice sia cambiato, e il verdetto su una
+  PR deve dipendere da ciò che scriviamo noi. Un secondo job gira su `stable` e **avvisa senza
+  bloccare**, così i lint nuovi si vedono quando escono invece che quando si alza il pin. Il numero
+  fissato è un «testato con», non la MSRV — che il crate continua a non dichiarare.
 - Questo changelog.
 
 ## [0.3.0] — 2026-08-28
