@@ -142,7 +142,34 @@ impl FontRegistry {
 
     pub fn load_json(path: &Path) -> Result<Self> {
         let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        Ok(serde_json::from_slice(&data)?)
+        let reg: Self = serde_json::from_slice(&data)?;
+        reg.check_hash_compatibility(path)?;
+        Ok(reg)
+    }
+
+    /// Rifiuta un registro i cui hash non sono confrontabili con quelli che questa versione calcola.
+    ///
+    /// Dalla 0.4.0 gli outline si leggono con `skrifa` invece che con `ttf-parser`, e i due parser
+    /// emettono la stessa curva con un numero di punti diverso: un indice piu' vecchio farebbe
+    /// apparire manomessi dei font onesti. Senza questo controllo il guasto sarebbe **silenzioso** —
+    /// nessun errore, solo risposte sbagliate — che in uno strumento d'integrita' e' il modo peggiore
+    /// di rompersi. Meglio un errore che dice cosa fare.
+    fn check_hash_compatibility(&self, path: &Path) -> Result<()> {
+        const PRIMA_VERSIONE_COMPATIBILE: (u32, u32) = (0, 4);
+        // `tool` vale "chk_defaced <versione>"; un registro senza il campo e' anteriore a tutto.
+        let versione = self.tool.rsplit(' ').next().unwrap_or_default();
+        let mut n = versione.split('.').filter_map(|p| p.parse::<u32>().ok());
+        let (maj, min) = (n.next().unwrap_or(0), n.next().unwrap_or(0));
+        if (maj, min) >= PRIMA_VERSIONE_COMPATIBILE {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "il registro {} e' stato costruito da \"{}\": gli hash degli outline erano calcolati con un parser diverso, quindi non sono confrontabili e i font onesti risulterebbero manomessi. Rigeneralo con `chk_defaced build-registry --out {}{}`",
+            path.display(),
+            if self.tool.is_empty() { "(versione non dichiarata)" } else { &self.tool },
+            path.display(),
+            if self.fonts.iter().all(|f| f.cmap.is_none()) { " --slim" } else { "" }
+        )
     }
 
     /// Index by file SHA and by identity (family/postscript, lowercased) for fast lookup.
@@ -266,5 +293,56 @@ mod tests {
         assert!(reg.canonical_substitutions(&pf("Mystery", &[(0x62, 30)])).is_empty());
         // Modified glyph that matches no canonical letter → inconclusive, not a false tamper.
         assert!(reg.canonical_substitutions(&pf("Arial", &[(0x62, 99)])).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+
+    fn registro(tool: &str) -> FontRegistry {
+        FontRegistry {
+            tool: tool.to_string(),
+            source_dir: String::new(),
+            count: 0,
+            skipped: Vec::new(),
+            fonts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn i_registri_anteriori_alla_0_4_sono_rifiutati() {
+        // Prima della 0.4.0 gli hash venivano da un altro parser: confrontarli farebbe apparire
+        // manomessi dei font onesti, e in silenzio.
+        for tool in ["chk_defaced 0.1.0", "chk_defaced 0.3.3", "chk_defaced 0.2.4", ""] {
+            let err = registro(tool)
+                .check_hash_compatibility(std::path::Path::new("x.json"))
+                .expect_err("{tool} deve essere rifiutato");
+            let msg = format!("{err:#}");
+            assert!(msg.contains("build-registry"), "l'errore deve dire cosa fare: {msg}");
+        }
+    }
+
+    #[test]
+    fn i_registri_dalla_0_4_in_poi_sono_accettati() {
+        for tool in ["chk_defaced 0.4.0", "chk_defaced 0.4.7", "chk_defaced 1.0.0"] {
+            assert!(registro(tool).check_hash_compatibility(std::path::Path::new("x.json")).is_ok());
+        }
+    }
+
+    #[test]
+    fn il_comando_suggerito_conserva_lo_slim() {
+        // Un registro senza cmap e' stato costruito con --slim: rigenerarlo senza cambierebbe forma.
+        // Serve un registro con almeno una voce priva di cmap: si costruisce dal JSON, cosi' il
+        // test non deve conoscere ogni campo di `FontEntry`.
+        let json = r#"{"tool":"chk_defaced 0.3.3","source_dir":"","count":1,"skipped":[],
+            "fonts":[{"path":"a.ttf","collection_index":0,"num_glyphs":1,"units_per_em":1000,
+            "file_sha256":"","cmap_sha256":"","cmap_len":0,"outlines":[]}]}"#;
+        let r: FontRegistry = serde_json::from_str(json).expect("registro di prova valido");
+        let msg = format!(
+            "{:#}",
+            r.check_hash_compatibility(std::path::Path::new("x.json")).unwrap_err()
+        );
+        assert!(msg.contains("--slim"), "{msg}");
     }
 }

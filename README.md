@@ -85,6 +85,43 @@ manufacturer), `num_glyphs`, `units_per_em`, the **file SHA-256**, the **cmap SH
 **cmap** as `(codepoint, glyph_id)` pairs, and per-codepoint **Latin outline hashes** (kept even with
 `--slim`) — the ground truth for the deterministic canonical tamper check below.
 
+> ### ⚠️ Upgrading to 0.4.0: rebuild your registry
+>
+> **0.4.0 changed how outline hashes are computed**, so an index written by 0.3.x or earlier is no
+> longer comparable. The cause: `ttf-parser` was replaced by `skrifa` (the old one is unmaintained,
+> RUSTSEC-2026-0192), and the two emit the same curve with a **different number of points** —
+> measured on the Latin letters of six system fonts, 439 of 443 diverging glyphs differ in sequence
+> length, so no rescaling or normalisation can reconcile them.
+>
+> **What happens if you do not rebuild:** nothing bad — `--registry` refuses the file and tells you
+> the exact command to regenerate it, `--slim` included if that is how it was built. The check reads
+> the `tool` field, so it costs nothing.
+>
+> That guard exists precisely because the alternative was ugly: comparing hashes that were never
+> comparable makes honest fonts look tampered with, and it would have failed **silently** — no error,
+> wrong answers. In a tool whose job is verifying integrity that is the worst way to break.
+>
+> **Are you affected?** Only if you pass `--registry`. Scanning without it is unchanged: the
+> in-document collision check compares hashes computed in the same run, so it stays consistent with
+> itself.
+>
+> **Check the file you have** — the `tool` field records the version that wrote it:
+>
+> ```sh
+> head -c 60 fonts-index.json          # {"tool":"chk_defaced 0.3.3","source_dir":...
+> ```
+>
+> **Rebuild it** with the same command that produced it:
+>
+> ```sh
+> chk_defaced build-registry --out fonts-index.json
+> chk_defaced build-registry --slim --out fonts-index.json      # if it was built --slim
+> ```
+>
+> A registry is only as good as the machine that built it: rebuild on the host whose fonts you want
+> as ground truth, not on a different one. The old file can be deleted — nothing reads it any more,
+> and keeping it around invites passing it by mistake.
+
 ### 2. Scan documents
 
 ```sh

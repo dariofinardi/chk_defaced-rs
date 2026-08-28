@@ -13,9 +13,13 @@ emettono la stessa curva con un **numero di punti diverso**: misurato sulle lett
 font di sistema, 439 glifi su 443 divergenti hanno lunghezza diversa della sequenza. Non è un offset
 normalizzabile.
 
-**Un registro costruito con una versione precedente non è confrontabile** e produce risultati
-sbagliati, non un errore. Va rigenerato con `build-registry`. Il campo `tool` del registro dice con
-quale versione è stato costruito.
+**Un registro costruito con una versione precedente non è confrontabile.** Passandolo a
+`--registry` il comando ora **si rifiuta di usarlo** e stampa il comando esatto per rigenerarlo,
+`--slim` incluso se era stato costruito così. Il controllo legge il campo `tool`, che registra la
+versione che ha scritto l'indice.
+
+Senza quella guardia il guasto sarebbe stato **silenzioso** — nessun errore, solo font onesti che
+risultano manomessi — che in uno strumento d'integrità è il modo peggiore di rompersi.
 
 Il rilevamento **in-documento** non è toccato: confronta hash calcolati nella stessa esecuzione,
 quindi resta coerente con sé stesso. A rompersi è solo il percorso `--registry`.
