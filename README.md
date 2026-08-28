@@ -517,82 +517,65 @@ the EU legal entries use the European Parliament Charter endpoint and national g
 
 ## Field reports (downstream corpora)
 
-Cases observed by a downstream consumer — `pdf-extractor-2-md`, same author — on a 16-document
-Italian corpus that does **not** overlap the 32-document evaluation corpus above. Both are
-**candidate** defects, reported with the evidence that raised them rather than as confirmed bugs,
-because they were seen from outside the crate.
+What a **consumer** sees. `pdf-extractor-2-md` (same author) runs this crate over a 16-document
+Italian corpus that does not overlap the [evaluation corpus](#evaluation-corpus) above, converts
+those documents to Markdown, and scores the result against a per-page ground truth. That gives
+something the fixtures here cannot: a number at the *far* end of the pipeline.
 
-### 1. Three `GLYPH_SEMANTIC_REPLACEMENT`, one occurrence each, on a clean document
+The distinction is worth stating once, because it decides what each corpus is for. **Synthetic
+fixtures verify that nothing breaks; real documents verify that something helped.** On the internal
+corpora the 0.3.0 fixes were perfectly neutral — no document changed verdict — and neutrality reads
+like a safety proof right up until you have the case where the defect was born.
 
-A 126-page Italian slide deck, 28 embedded fonts, no reason to suspect it:
+### 1. Subset-window artefact — closed in 0.3.0, and measured at both ends
 
-```
-[High] PDF.GLYPH_SEMANTIC_REPLACEMENT — glyph drawing 'j' mapped from extracted 'h' (1×)
-[High] PDF.GLYPH_SEMANTIC_REPLACEMENT — glyph drawing 'k' mapped from extracted 'ü' (1×)
-[High] PDF.GLYPH_SEMANTIC_REPLACEMENT — glyph drawing 'l' mapped from extracted 'þ' (1×)
-```
+**Symptom.** A 126-page Italian deck, 28 embedded fonts, no reason to suspect it, produced eight
+`High` `GLYPH_SEMANTIC_REPLACEMENT`. Three named the consecutive drawn letters `j`, `k`, `l`, each
+firing at most twice, from extracted characters partly outside the document's repertoire (`þ` is
+Icelandic and does not occur in Italian).
 
-Downstream consequence: the consumer routes every affected page to OCR, so **14 pages of a clean
-document** stop being read as exact text. That is the correct reaction to a `High` finding — which
-is why the finding itself is worth a second look.
+**Real cause, and it was two defects propping each other up.** Five of the eight were **typographic
+ligatures** (`f → ﬀ ﬁ ﬂ ﬃ ﬄ`): the NFKD check asked for *equality* of decompositions, and `"fi"` is
+not `"f"`, so they passed. They were not merely noise — arriving in the same list they broke the
+contiguity of `j,k,l` and stopped the subset-window rule from ever forming. Removing them was a
+precondition for seeing the other three for what they are.
 
-Three things suggest a subset-font artefact rather than an attack:
+**Downstream effect, and it is a chain.** A false positive does not stay one:
 
-- **one occurrence each**, in 126 pages. Semantic replacement is done to change what a reader takes
-  away, and that needs it applied *systematically*; a single glyph changes nothing;
-- the extracted characters are **outside the document's repertoire**. `þ` (thorn) is Icelandic and
-  does not occur in Italian; `ü` is marginal. An attacker picks source characters the document
-  actually contains, or the substitution never fires;
-- the three targets `j`, `k`, `l` are **adjacent**, which is what a shifted glyph-id range in a
-  subset font looks like.
+| stage | consequence |
+|---|---|
+| `High` finding | 14 clean pages routed to OCR |
+| pages routed | recognised text where exact text was available |
+| `presumed` applied | `ORCHESTRARE → ORCJESTRARE`, `che → cje`, `Auspichiamo → Auspicjiamo` |
+| mangled text to a guardrails model | **four** `unsafe` verdicts at 87–100%, all false |
 
-Possible direction, if it survives checking: weigh a semantic replacement by **how many times it
-fires**, and by whether the extracted character belongs to the document's script/language
-repertoire — rather than lowering the severity of the rule as such. The measurable test is one this
-crate already has: `ocr-specimen` on that font either confirms the mapping or refutes it.
+**After 0.3.0**, on the same document: the three findings become one `[Info]
+FONT_SUBSET_WINDOW_ARTIFACT`, **no page is routed** (the «read with OCR» warnings in the Markdown go
+from **14 to 0**), and the four guardrail alarms disappear at the source rather than being filtered
+later.
 
-**Downstream damage, measured (added 2026-08-25).** This is no longer only a routing cost. The
-`h→j` finding feeds the substitution map, and `PhraseDiff::presumed` applies it — so the
-"corrected" sentence is *worse* than the extraction:
+| | recall | reading order |
+|---|---|---|
+| that document | 86.1% → **92.4%** (+6.3) | 86.8% → **91.6%** (+4.8) |
+| the 16-document corpus | 96.8% → **97.2%** (+0.4) | 96.2% → **96.5%** (+0.3) |
 
-```
-ORCHESTRARE  ->  ORCJESTRARE
-che          ->  cje
-collegi      ->  collegji
-Auspichiamo  ->  Auspicjiamo
-```
+This card is kept although the defect is closed, because it is the only end-to-end evidence tying a
+detector's false positive to the damage it does downstream — and it is the justification for the
+invariant `presumed.is_some() ⟹ corroborated`, which without it looks like gratuitous caution.
 
-The consumer put those reconstructions to a guardrails model, which answered **`unsafe` at
-87-100%** on all four passages it flagged — four false alarms manufactured entirely by the
-correction. The consumer now refuses to use `presumed` at all and asks for pixel ground truth or
-nothing, which is a workaround for this, not a fix.
+### 2. `INVISIBLE_TEXT_COLOR` on a visible title — open
 
-Also measured on the same document: `atlas::verify_with_render` left these findings
-**Unconfirmed** rather than Refuted, so the render does not currently rescue the case either —
-14 of 14 pages stayed routed, for ~30 minutes of rendering and OCR.
+Same document, page 1: a cover slide whose background is 11 images covering 100% of the page.
+~1077 characters are flagged `Medium` as camouflaged, and the flagged run is the slide's **visible
+title** — white type over a dark photograph, which a reader sees perfectly well.
 
-### 2. `INVISIBLE_TEXT_COLOR` on a title over a full-bleed image
+The diagnosis is [Structurally open #3](#structurally-open--document-level-weaknesses): an unknown
+background becomes a certain white. This entry is the field evidence for it, not a second analysis —
+a first attempt to diagnose it from the outside blamed the painter model for misreading the image,
+which the code refutes (a `Do` already registers `Region { colour: None }`). Symptom reports from a
+consumer are worth having; diagnoses from one are worth checking.
 
-Same document, page 1 — a cover slide whose background is **11 images covering 100% of the page**:
-
-```
-[Medium] PDF.INVISIBLE_TEXT_COLOR — ~1077 char(s) drawn in ~the same colour as its local
-background (camouflaged) — e.g. "Þ ’ =UTO=NTÞÞ=GNTÞ C OMMRC=Þ=ST Opn=(ntrprs/P=) …" (page 1)
-```
-
-The flagged run is the slide's **visible title**, read through the broken mapping of case 1:
-`=UTO=NTÞÞ=GNTÞ` is *L'AIUTO INTELLIGENTE* and `C OMMRC=Þ=ST` is *COMMERCIALISTA*. A human sees
-that title perfectly well — it is white type over a dark photograph.
-
-Hypothesis: the painter model records images as z-ordered backgrounds, but an image has no single
-colour, so a light run over a dark photograph ends up judged against something that is not what is
-under it. Where an image is the top-most thing beneath a run, sampling the pixels under the run's
-bounding box — or declining to judge, which costs a missed candidate rather than a false one —
-would both be safer than treating it as a flat fill.
-
-The two cases probably share one cause: a subset font whose `ToUnicode` is broken, which makes the
-extraction garbled (case 1) *and* supplies the garbled sample quoted in case 2. If that holds,
-closing the first closes the second.
+Still reproduces on 0.3.0.
 
 ## Background & references
 
