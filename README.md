@@ -42,6 +42,10 @@ The core is **pure Rust** and **offline** by default; OCR/rendering are opt-in.
 
 ## Build
 
+> Feature matrix, native dependencies (Tesseract, tessdata, pdfium, webview), environment variables,
+> per-platform status, the full dependency inventory with licences, and what `cargo audit` reports
+> and why: **[BUILD.md](BUILD.md)**.
+
 ```sh
 cargo build --release
 ```
