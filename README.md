@@ -559,6 +559,23 @@ Independent research on the same attack class:
   — the browser/HTML variant: a custom font acts as a cipher key so the rendered text and the DOM text
   diverge.
 
+## Credits
+
+Author: **Dario Finardi** (<df@dariofinardi.it>).
+
+`chk_defaced` grew out of the document-integrity work for **[Edito](https://edito-pdf.com)**, the
+GDPR-native document intelligence platform built by **Jugaad s.r.l.** (Italy). Edito's pipeline
+ingests documents on behalf of its users, which makes the gap between *what a reader sees* and *what a
+machine extracts* an operational problem rather than a theoretical one: a tampered font or an invisible
+run reaches the model, not the reader. The screening had to be **deterministic and LLM-free** — an
+integrity check must not itself depend on the component it protects — and cheap enough to run on every
+ingested file.
+
+The crate is released independently of that product, under AGPL-3.0-only, so the check can be reused
+at any PDF/DOCX/HTML → LLM ingestion boundary.
+
+---
+
 ## License
 
 Licensed under the **GNU Affero General Public License, version 3** (`AGPL-3.0-only`) — see

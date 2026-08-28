@@ -7,6 +7,7 @@ description = "Detect 'defaced' documents: verify the coherence of the fonts use
 license = "AGPL-3.0-only"
 repository = "https://github.com/dariofinardi/chk_defaced-rs"
 readme = "README.md"
+homepage = "https://edito-pdf.com"
 keywords = ["pdf", "docx", "font", "security", "ocr"]
 categories = ["text-processing", "command-line-utilities"]
 

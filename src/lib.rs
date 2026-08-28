@@ -5,6 +5,10 @@
 //! Background: "What you see is not what your AI reads"
 //! <https://dariofinardi.it/what-you-see-is-not-what-your-ai-reads-c3fed388d3bc>.
 //!
+//! Author: **Dario Finardi**. Developed as part of the document-integrity work for
+//! **Edito** (<https://edito-pdf.com>), the GDPR-native document intelligence platform by
+//! **Jugaad s.r.l.** (Italy). Released independently under AGPL-3.0-only.
+//!
 //! Minimal embedding example:
 //! ```no_run
 //! let report = chk_defaced::scan::scan_path(std::path::Path::new("contract.pdf"), None)?;
