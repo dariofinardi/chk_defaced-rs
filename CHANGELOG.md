@@ -35,6 +35,15 @@ quindi resta coerente con sé stesso. A rompersi è solo il percorso `--registry
 - La bbox del glifo è **misurata dal tracciato**: `skrifa` non espone `glyph_bounding_box`. È anche
   più fedele della bbox dichiarata nell'header, che può essere larga o sbagliata.
 
+### Noto e non risolto
+
+- `fxhash` è *unmaintained* (RUSTSEC-2025-0057) ed è nel grafo di **default**, ma indirettamente:
+  ci arriva da `scraper` → `selectors`, cioè dalla feature `html` attiva di default. È abbandono,
+  non una vulnerabilità, e non dipende da una nostra scelta diretta. Tenuto consapevolmente per
+  ora; da affrontare in **0.5**, togliendo il backend HTML dalle feature di default oppure
+  passando a un motore di selettori mantenuto. Chi non usa la passata HTML lo elimina già oggi con
+  `default-features = false`.
+
 ### Verifica
 
 Comportamento **identico** al parser precedente su tutti i corpus: 9/10 documenti d'attacco

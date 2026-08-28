@@ -152,7 +152,7 @@ is absent, so the suite is green either way.
 
 | Crate | License | Role |
 |---|---|---|
-| `ttf-parser` | MIT OR Apache-2.0 | Embedded fonts and glyph outlines — **the core of the check** |
+| `skrifa` | MIT OR Apache-2.0 | Embedded fonts and glyph outlines — **the core of the check** |
 | `lopdf` | MIT | PDF parsing: objects, `ToUnicode`, content streams |
 | `zip` | MIT | DOCX container, `.odttf` de-obfuscation |
 | `quick-xml` | MIT | OOXML and XMP metadata |
@@ -196,9 +196,10 @@ the default graph**:
 | `RUSTSEC-2026-0194` / `-0195` — `quick-xml` 0.30 | **No.** Build-dependency of `xcb`, pulled by `xcap` under `render-wry`, on X11 targets only. It runs at compile time to read X11 protocol descriptions and never sees a document. |
 | `RUSTSEC-2026-0258` — `h2` | **No.** Optional GUI path. |
 | `RUSTSEC-2024-0413` / `-0416` — `atk`, `atk-sys` unmaintained | **No.** GTK3 bindings via `wry` on Linux. |
-| `RUSTSEC-2026-0192` — `ttf-parser` unmaintained | **Yes.** Core dependency, and open. The advisory suggests `skrifa`; the API surface used here is small (`cmap`, `units_per_em`, `glyph_index`, `outline_glyph`, two `OutlineBuilder` impls), so the migration is nearly 1:1 — but it would change glyph outline hashing, which feeds the registry, so it needs a test asserting identical hashes on a font sample before it can be done. |
+| `RUSTSEC-2025-0057` — `fxhash` unmaintained | **Yes**, and *knowingly kept for now*. It arrives through `scraper` → `selectors`, i.e. from the `html` feature, which is on by default — not from a direct choice of ours. It is abandonment, not a vulnerability. Two ways out, both for **0.5**: drop the HTML backend from the default features, or move it to a maintained selector engine. Until then, `default-features = false` removes it for anyone who does not need the HTML pass. |
 
-The direct `quick-xml` is 0.41, the patched version.
+The direct `quick-xml` is 0.41, the patched version. `ttf-parser` (RUSTSEC-2026-0192, unmaintained)
+was the other advisory in the default graph until 0.4.0 replaced it with `skrifa`.
 
 ---
 

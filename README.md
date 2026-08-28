@@ -430,6 +430,17 @@ spots regardless of the detection rules layered on top.
    answer already exists: the image-coverage grid used for searchable-scan detection knows how much of
    the page is covered by images and could simply disable the colour axis.
 
+### Known dependency debt
+
+| Crate | Advisory | Status |
+|---|---|---|
+| `ttf-parser` | RUSTSEC-2026-0192, unmaintained | **Resolved in 0.4.0** — replaced by [`skrifa`](https://crates.io/crates/skrifa) (Google Fonts *fontations*). The two parsers emit the same curve with a different number of points, so **outline hashes changed and registries must be rebuilt**; the `tool` field of a registry records which version wrote it. |
+| `fxhash` | RUSTSEC-2025-0057, unmaintained | **Open, knowingly kept.** It is in the *default* graph, but indirectly: `scraper` → `selectors` → `fxhash`, i.e. it comes with the `html` feature, which is on by default. Abandonment, not a vulnerability. Planned for **0.5**: either drop the HTML backend from the default features or move to a maintained selector engine. `default-features = false` removes it today for anyone who does not need the HTML pass. |
+
+Every other advisory `cargo audit` reports is **outside the default graph** — `h2`, `quick-xml` 0.30
+and the GTK/`atk` family all arrive through the optional `render-wry` feature, on X11 targets.
+Details and dependency paths in [BUILD.md](https://github.com/dariofinardi/chk_defaced-rs/blob/main/BUILD.md#cargo-audit).
+
 ### Ligatures are decoded correctly in extraction
 
 A ligature is a **typographic** substitution — one glyph drawing `f`+`f`+`i` — not a semantic one, and
