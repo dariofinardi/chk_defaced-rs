@@ -119,7 +119,7 @@ fn push_printable(bytes: &[u8], out: &mut String) {
 /// (the array form of `TJ` interleaves kerning numbers between strings — those are ignored).
 fn shown_text(operands: &[Object], font: Option<&FontDecode>) -> String {
     let mut s = String::new();
-    let mut emit = |bytes: &[u8], s: &mut String| match font {
+    let emit = |bytes: &[u8], s: &mut String| match font {
         Some(f) => f.decode(bytes, s),
         None => push_printable(bytes, s),
     };
