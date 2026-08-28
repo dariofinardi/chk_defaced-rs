@@ -15,8 +15,25 @@ normalizzabile.
 
 **Un registro costruito con una versione precedente non è confrontabile.** Passandolo a
 `--registry` il comando ora **si rifiuta di usarlo** e stampa il comando esatto per rigenerarlo,
-`--slim` incluso se era stato costruito così. Il controllo legge il campo `tool`, che registra la
-versione che ha scritto l'indice.
+`--slim` incluso se era stato costruito così.
+
+Il controllo legge un **numero di formato** (`hash_format`, [`HASH_FORMAT`]), non piu' il campo
+`tool`. Sono due domande diverse: `tool` dice *chi* ha costruito il file — resta, come provenienza e
+diagnostica, nei messaggi d'errore — e il numero dice *con quale formato di hash*. Finché le due
+coincidevano per convenzione, la compatibilità dipendeva dal layout di una stringa libera.
+
+Il numero cambia **solo** quando gli hash smettono di essere confrontabili, non a ogni release: una
+0.4.1, o una 0.5 che non tocca il calcolo degli outline, non costringe a rigenerare 27 MB di indice —
+distinzione che il confronto per versione non sapeva fare.
+
+E rende esprimibile il verso opposto, che il confronto per versione non poteva dire: un registro
+**più recente** di quel che questa versione sa confrontare. Con `(maj, min) >= (0, 4)` veniva
+accettato in silenzio, perché `(0,9) >= (0,4)` è vero anche se la 0.9 avesse ricambiato il parser.
+Una versione non può conoscere le rotture future, quindi quel verso era **incopribile per
+costruzione**, e un consumatore vendorizzato doveva mettercisi una guardia propria.
+
+Un file privo del campo si legge come `0` (`serde(default)`), che è esattamente la verità: costruito
+prima che il formato avesse un numero, cioè prima della 0.4.0.
 
 Senza quella guardia il guasto sarebbe stato **silenzioso** — nessun errore, solo font onesti che
 risultano manomessi — che in uno strumento d'integrità è il modo peggiore di rompersi.
