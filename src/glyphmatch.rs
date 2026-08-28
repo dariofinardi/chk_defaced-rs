@@ -152,7 +152,7 @@ pub fn subsetting_window(pairs: &[(char, char, usize)]) -> Option<String> {
     }
     let letters: String = drawn.iter().filter_map(|&c| char::from_u32(c)).collect();
     Some(format!(
-        "{} glyph(s) drawing the consecutive letters '{}', each firing at most {}× — the signature of a          subset font with a shifted ToUnicode, not a targeted replacement (which has to be systematic          to change meaning)",
+        "{} glyph(s) drawing the consecutive letters '{}', each firing at most {}× — the signature of a subset font with a shifted ToUnicode, not a targeted replacement (which has to be systematic to change meaning)",
         pairs.len(),
         letters,
         WINDOW_MAX_OCCURRENCES
