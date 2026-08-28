@@ -29,8 +29,11 @@ jobs:
 
       # Le fixture stanno fuori dal repo (../data/...): i test che le usano si
       # auto-saltano, quelli deterministici girano comunque.
+      # `--lib` e `--doc` non si possono combinare in una sola invocazione di cargo.
       - name: test
-        run: cargo test --lib --doc
+        run: |
+          cargo test --lib
+          cargo test --doc
 
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
