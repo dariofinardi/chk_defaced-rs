@@ -11,6 +11,8 @@
 //! with the drawn one — semantic replacement. Deterministic; OCR stays as a fallback for fonts whose
 //! outlines cannot be read (Type3, bare CFF without a usable program, etc.).
 
+use skrifa::raw::FontRef;
+use skrifa::MetadataProvider;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -177,7 +179,7 @@ pub fn pdf_font_claims_doc(doc: &Document) -> Vec<crate::FontClaims> {
             continue;
         }
         let Some(bytes) = embedded_font_bytes(doc, d) else { continue };
-        if ttf_parser::Face::parse(&bytes, 0).is_err() {
+        if FontRef::new(&bytes).is_err() {
             continue;
         }
         let mut claims: HashSet<(char, u16)> = HashSet::new();
@@ -192,17 +194,15 @@ pub fn pdf_font_claims_doc(doc: &Document) -> Vec<crate::FontClaims> {
                 }
             }
         }
-        if let Ok(face) = ttf_parser::Face::parse(&bytes, 0) {
-            if let Some(cmap) = face.tables().cmap {
-                for sub in cmap.subtables {
-                    if !sub.is_unicode() {
-                        continue;
-                    }
-                    sub.codepoints(|cp| {
-                        if let (Some(c), Some(gid)) = (char::from_u32(cp), sub.glyph_index(cp)) {
-                            claims.insert((c, gid.0));
-                        }
-                    });
+        if let Ok(face) = FontRef::new(&bytes) {
+            // Cmap simbolica: mappa in F000-F0FF per progetto, non e' offuscazione (vedi font.rs).
+            let charmap = face.charmap();
+            if charmap.is_symbol() {
+                continue;
+            }
+            for (cp, gid) in charmap.mappings() {
+                if let Some(c) = char::from_u32(cp) {
+                    claims.insert((c, gid.to_u32() as u16));
                 }
             }
         }
@@ -280,7 +280,7 @@ pub fn pdf_outline_scan_doc(doc: &Document) -> OutlineScan {
             continue;
         }
         let Some(bytes) = embedded_font_bytes(doc, d) else { continue };
-        let Ok(face) = ttf_parser::Face::parse(&bytes, 0) else { continue };
+        let Ok(face) = FontRef::new(&bytes) else { continue };
 
         // (1) ToUnicode + CID→GID: code → letter, code → GID → outline. Type0 only (see `is_type0`):
         // a simple font's content-stream code is not a glyph id (it routes through /Encoding), so
@@ -298,19 +298,15 @@ pub fn pdf_outline_scan_doc(doc: &Document) -> OutlineScan {
         }
 
         // (2) the font's own internal Unicode cmap (simple TrueType fonts): codepoint → GID → outline.
-        if let Some(cmap) = face.tables().cmap {
-            for sub in cmap.subtables {
-                if !sub.is_unicode() {
-                    continue;
-                }
-                sub.codepoints(|cp| {
-                    let Some(letter) = letter(cp) else { return };
-                    if let Some(gid) = sub.glyph_index(cp) {
-                        if let Some(h) = glyph_outline_hash(&face, gid.0) {
-                            *sigs.entry(h).or_default().entry(letter).or_default() += 1;
-                        }
-                    }
-                });
+        // Cmap simbolica: mappa in F000-F0FF per progetto, non e' offuscazione (vedi font.rs).
+        let charmap = face.charmap();
+        if charmap.is_symbol() {
+            continue;
+        }
+        for (cp, gid) in charmap.mappings() {
+            let Some(letter) = letter(cp) else { continue };
+            if let Some(h) = glyph_outline_hash(&face, gid.to_u32() as u16) {
+                *sigs.entry(h).or_default().entry(letter).or_default() += 1;
             }
         }
     }

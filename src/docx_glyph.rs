@@ -14,6 +14,8 @@
 //! document's extracted text — the only characters a reader could be misled by — keeping full Unicode
 //! coverage (accented Latin, non-Latin scripts) without the false positives of the full repertoire.
 
+use skrifa::raw::FontRef;
+use skrifa::MetadataProvider;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
@@ -170,7 +172,7 @@ pub fn docx_outline_scan(path: &Path) -> Result<OutlineScan> {
         'keys: for guid in &keys {
             for reversed in [true, false] {
                 let de = deobfuscate(&raw, guid, reversed);
-                if let Ok(face) = ttf_parser::Face::parse(&de, 0) {
+                if let Ok(face) = FontRef::new(&de) {
                     tally_face(&face, &doc_letters, &mut sigs);
                     parsed = true;
                     break 'keys;
@@ -291,22 +293,21 @@ pub fn docx_font_claims(path: &Path) -> Result<Vec<crate::FontClaims>> {
         'keys: for guid in &keys {
             for reversed in [true, false] {
                 let de = deobfuscate(&raw, guid, reversed);
-                let Ok(face) = ttf_parser::Face::parse(&de, 0) else { continue };
-                let Some(cmap) = face.tables().cmap else { break 'keys };
+                let Ok(face) = FontRef::new(&de) else { continue };
                 let mut claims: HashSet<(char, u16)> = HashSet::new();
-                for sub in cmap.subtables {
-                    if !sub.is_unicode() {
+                // Cmap simbolica: mappa in F000-F0FF per progetto, non e' offuscazione (vedi font.rs).
+                let charmap = face.charmap();
+                if charmap.is_symbol() {
+                    continue;
+                }
+                for (cp, gid) in charmap.mappings() {
+                    let Some(l) = letter(cp) else { continue };
+                    if !doc_letters.contains(&l) {
                         continue;
                     }
-                    sub.codepoints(|cp| {
-                        let Some(l) = letter(cp) else { return };
-                        if !doc_letters.contains(&l) {
-                            return;
-                        }
-                        if let (Some(c), Some(gid)) = (char::from_u32(cp), sub.glyph_index(cp)) {
-                            claims.insert((c, gid.0));
-                        }
-                    });
+                    if let Some(c) = char::from_u32(cp) {
+                        claims.insert((c, gid.to_u32() as u16));
+                    }
                 }
                 if !claims.is_empty() {
                     out.push((de, claims.into_iter().collect()));
@@ -318,24 +319,21 @@ pub fn docx_font_claims(path: &Path) -> Result<Vec<crate::FontClaims>> {
     Ok(out)
 }
 
-fn tally_face(face: &ttf_parser::Face, doc_letters: &HashSet<char>, sigs: &mut HashMap<u64, Tally>) {
-    let Some(cmap) = face.tables().cmap else { return };
-    for sub in cmap.subtables {
-        if !sub.is_unicode() {
+fn tally_face(face: &FontRef, doc_letters: &HashSet<char>, sigs: &mut HashMap<u64, Tally>) {
+    // Cmap simbolica: mappa in F000-F0FF per progetto, non e' offuscazione (vedi font.rs).
+    let charmap = face.charmap();
+    if charmap.is_symbol() {
+        return;
+    }
+    for (cp, gid) in charmap.mappings() {
+        let Some(letter) = letter(cp) else { continue };
+        // Only characters the document actually extracts can mislead a reader; ignore the rest
+        // (full fonts reuse one outline across many never-used codepoints).
+        if !doc_letters.contains(&letter) {
             continue;
         }
-        sub.codepoints(|cp| {
-            let Some(letter) = letter(cp) else { return };
-            // Only characters the document actually extracts can mislead a reader; ignore the rest
-            // (full fonts reuse one outline across many never-used codepoints).
-            if !doc_letters.contains(&letter) {
-                return;
-            }
-            if let Some(gid) = sub.glyph_index(cp) {
-                if let Some(h) = glyph_outline_hash(face, gid.0) {
-                    *sigs.entry(h).or_default().by_letter.entry(letter).or_default() += 1;
-                }
-            }
-        });
+        if let Some(h) = glyph_outline_hash(face, gid.to_u32() as u16) {
+            *sigs.entry(h).or_default().by_letter.entry(letter).or_default() += 1;
+        }
     }
 }

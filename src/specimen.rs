@@ -27,6 +27,10 @@
 //! still an escalation for the cases the deterministic detectors can't decide — read findings as strong
 //! candidates, not proof.
 
+use skrifa::outline::{DrawSettings, OutlinePen};
+use skrifa::prelude::*;
+use skrifa::raw::{FontRef, TableProvider};
+use skrifa::{GlyphId, MetadataProvider};
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
@@ -50,7 +54,7 @@ fn is_ligature(c: char) -> bool {
     matches!(c as u32, 0xFB00..=0xFB4F)
 }
 
-/// Feeds a `ttf_parser` glyph outline into a `tiny_skia` path, mapping font units (Y-up) to image
+/// Feeds a `skrifa` glyph outline into a `tiny_skia` path, mapping font units (Y-up) to image
 /// pixels (Y-down) with the glyph's bounding box placed at `(PAD, PAD)`.
 struct PathPen {
     pb: tiny_skia::PathBuilder,
@@ -66,7 +70,7 @@ impl PathPen {
         (self.y_max - y) * self.scale + PAD
     }
 }
-impl ttf_parser::OutlineBuilder for PathPen {
+impl OutlinePen for PathPen {
     fn move_to(&mut self, x: f32, y: f32) {
         self.pb.move_to(self.ix(x), self.iy(y));
     }
@@ -84,25 +88,82 @@ impl ttf_parser::OutlineBuilder for PathPen {
     }
 }
 
+/// Penna di misura: calcola la bbox del contorno mentre lo si percorre.
+///
+/// `skrifa` non espone `glyph_bounding_box`, ma per dimensionare la tela serve. Misurarla dal
+/// tracciato e' anche piu' fedele della bbox dichiarata nell'header del glifo, che puo' essere
+/// larga o sbagliata.
+#[derive(Default)]
+struct BBoxPen {
+    b: Option<(f32, f32, f32, f32)>,
+}
+impl BBoxPen {
+    fn touch(&mut self, x: f32, y: f32) {
+        self.b = Some(match self.b {
+            None => (x, y, x, y),
+            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+        });
+    }
+}
+impl OutlinePen for BBoxPen {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.touch(x, y)
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.touch(x, y)
+    }
+    fn quad_to(&mut self, a: f32, b: f32, x: f32, y: f32) {
+        self.touch(a, b);
+        self.touch(x, y)
+    }
+    fn curve_to(&mut self, a: f32, b: f32, c: f32, d: f32, x: f32, y: f32) {
+        self.touch(a, b);
+        self.touch(c, d);
+        self.touch(x, y)
+    }
+    fn close(&mut self) {}
+}
+
+/// Disegna il glifo in unita' font su una penna qualsiasi.
+fn draw_unscaled(face: &FontRef, gid: u16, pen: &mut impl OutlinePen) -> Option<()> {
+    let g = face.outline_glyphs().get(GlyphId::from(gid))?;
+    g.draw(DrawSettings::unhinted(Size::unscaled(), LocationRef::default()), pen).ok()?;
+    Some(())
+}
+
+/// bbox del glifo in unita' font, misurata dal tracciato.
+fn glyph_bbox(face: &FontRef, gid: u16) -> Option<(f32, f32, f32, f32)> {
+    let mut m = BBoxPen::default();
+    draw_unscaled(face, gid, &mut m)?;
+    m.b
+}
+
+/// Avanzamento orizzontale in unita' font.
+fn advance(face: &FontRef, gid: u16) -> f32 {
+    face.glyph_metrics(Size::unscaled(), LocationRef::default())
+        .advance_width(GlyphId::from(gid))
+        .unwrap_or(0.0)
+}
+
 /// Rasterize one glyph, repeated `REPEATS` times on a line, to a grayscale specimen image.
 /// Returns `None` for empty/space glyphs (nothing to OCR).
-fn render_specimen(face: &ttf_parser::Face, gid: u16) -> Option<GrayImage> {
+fn render_specimen(face: &FontRef, gid: u16) -> Option<GrayImage> {
     render_specimen_px(face, gid, PX)
 }
 
 /// [`render_specimen`] a una risoluzione data. Il contorno (`PAD`) e la spaziatura (`GAP`) scalano
 /// con l'altezza, cosi' il ritaglio resta **stretto sul glifo** a ogni risoluzione: piu' pixel sulla
 /// lettera, non piu' bianco intorno.
-pub(crate) fn render_specimen_px(face: &ttf_parser::Face, gid: u16, px: f32) -> Option<GrayImage> {
-    let bbox = face.glyph_bounding_box(ttf_parser::GlyphId(gid))?;
-    let upem = face.units_per_em() as f32;
+pub(crate) fn render_specimen_px(face: &FontRef, gid: u16, px: f32) -> Option<GrayImage> {
+    let (bx0, by0, bx1, by1) = glyph_bbox(face, gid)?;
+    let upem = face.head().ok()?.units_per_em() as f32;
     if upem <= 0.0 {
         return None;
     }
     let scale = px / upem;
     let (pad, gap) = (PAD * px / PX, GAP * px / PX);
-    let gw = (bbox.x_max - bbox.x_min) as f32 * scale;
-    let gh = (bbox.y_max - bbox.y_min) as f32 * scale;
+    let gw = (bx1 - bx0) * scale;
+    let gh = (by1 - by0) * scale;
     if gw < 1.0 || gh < 1.0 {
         return None;
     }
@@ -110,10 +171,10 @@ pub(crate) fn render_specimen_px(face: &ttf_parser::Face, gid: u16, px: f32) -> 
     let mut pen = PathPen {
         pb: tiny_skia::PathBuilder::new(),
         scale,
-        x_min: bbox.x_min as f32,
-        y_max: bbox.y_max as f32,
+        x_min: bx0,
+        y_max: by1,
     };
-    face.outline_glyph(ttf_parser::GlyphId(gid), &mut pen)?;
+    draw_unscaled(face, gid, &mut pen)?;
     let path = pen.pb.finish()?;
 
     let step = gw + gap;
@@ -168,8 +229,8 @@ fn vote(scored: &[(char, f32)]) -> Option<char> {
 /// e' una non-parola e lo lascia senza aiuto dal modello linguistico — qui l'immagine e' una parola
 /// reale del documento, disegnata dai glifi che il documento usa davvero. Quindi mostra **cio' che
 /// il lettore vede**, senza rasterizzare pagine e senza pdfium.
-pub(crate) fn render_word_px(face: &ttf_parser::Face, gids: &[u16], px: f32) -> Option<GrayImage> {
-    let upem = face.units_per_em() as f32;
+pub(crate) fn render_word_px(face: &FontRef, gids: &[u16], px: f32) -> Option<GrayImage> {
+    let upem = face.head().ok()?.units_per_em() as f32;
     if upem <= 0.0 || gids.is_empty() {
         return None;
     }
@@ -181,10 +242,10 @@ pub(crate) fn render_word_px(face: &ttf_parser::Face, gids: &[u16], px: f32) -> 
     let (mut y_min, mut y_max) = (f32::MAX, f32::MIN);
     let mut larghezza = 0.0f32;
     for &g in gids {
-        larghezza += face.glyph_hor_advance(ttf_parser::GlyphId(g)).unwrap_or(0) as f32;
-        if let Some(b) = face.glyph_bounding_box(ttf_parser::GlyphId(g)) {
-            y_min = y_min.min(b.y_min as f32);
-            y_max = y_max.max(b.y_max as f32);
+        larghezza += advance(face, g);
+        if let Some((_, by0, _, by1)) = glyph_bbox(face, g) {
+            y_min = y_min.min(by0);
+            y_max = y_max.max(by1);
         }
     }
     if larghezza <= 0.0 || y_max <= y_min {
@@ -201,7 +262,7 @@ pub(crate) fn render_word_px(face: &ttf_parser::Face, gids: &[u16], px: f32) -> 
     let mut x = 0.0f32;
     for &g in gids {
         let mut pen = PathPen { pb: tiny_skia::PathBuilder::new(), scale, x_min: 0.0, y_max };
-        if face.outline_glyph(ttf_parser::GlyphId(g), &mut pen).is_some() {
+        if draw_unscaled(face, g, &mut pen).is_some() {
             if let Some(path) = pen.pb.finish() {
                 pm.fill_path(
                     &path,
@@ -212,7 +273,7 @@ pub(crate) fn render_word_px(face: &ttf_parser::Face, gids: &[u16], px: f32) -> 
                 );
             }
         }
-        x += face.glyph_hor_advance(ttf_parser::GlyphId(g)).unwrap_or(0) as f32;
+        x += advance(face, g);
     }
     let gray: Vec<u8> = pm.data().chunks_exact(4).map(|px| px[0]).collect();
     Some(GrayImage::new(w, h, gray))
@@ -239,7 +300,7 @@ pub(crate) fn render_word_px(face: &ttf_parser::Face, gids: &[u16], px: f32) -> 
 /// posizione**, che stanno nel content stream, non nel riassunto ToUnicode.
 #[doc(hidden)] // Non ancora collegato al flusso di scansione: vedi il limite qui sopra.
 pub fn word_specimen_side(
-    face: &ttf_parser::Face,
+    face: &FontRef,
     char_to_gid: &HashMap<char, u16>,
     word: &str,
     subs: &[(char, char)],
@@ -279,7 +340,7 @@ pub fn word_specimen_side(
 pub fn specimen_reads(fonts: &[crate::FontClaims], ocr: &dyn OcrEngine) -> Vec<(char, char)> {
     let mut out = Vec::new();
     for (bytes, claims) in fonts {
-        let Ok(face) = ttf_parser::Face::parse(bytes, 0) else { continue };
+        let Ok(face) = FontRef::new(bytes) else { continue };
         let mut by_gid: HashMap<u16, Vec<char>> = HashMap::new();
         for &(ch, gid) in claims {
             if ch.is_alphabetic() && !is_ligature(ch) {
@@ -312,7 +373,7 @@ pub fn specimen_scan(
     let mut lies: HashMap<(char, char), usize> = HashMap::new();
 
     for (bytes, claims) in fonts {
-        let Ok(face) = ttf_parser::Face::parse(bytes, 0) else { continue };
+        let Ok(face) = FontRef::new(bytes) else { continue };
         // distinct glyph → the claimed letters that reach it
         let mut by_gid: HashMap<u16, Vec<char>> = HashMap::new();
         for &(ch, gid) in claims {
@@ -623,7 +684,7 @@ mod resolution_experiment {
         for pdf in &pdfs {
             let Ok(fonts) = crate::pdf_glyph::pdf_font_claims(pdf) else { continue };
             for (bytes, claims) in fonts.iter() {
-                let Ok(face) = ttf_parser::Face::parse(bytes, 0) else { continue };
+                let Ok(face) = FontRef::new(bytes) else { continue };
                 let mut visti = std::collections::HashSet::new();
                 for &(ch, gid) in claims.iter() {
                     // Solo lettere latine di base: su un documento pulito il carattere dichiarato
@@ -724,7 +785,7 @@ mod word_context_experiment {
             let Ok(doc) = lopdf::Document::load(pdf) else { continue };
             let Ok(fonts) = crate::pdf_glyph::pdf_font_claims(pdf) else { continue };
             let Some((bytes, claims)) = fonts.first() else { continue };
-            let Ok(face) = ttf_parser::Face::parse(bytes, 0) else { continue };
+            let Ok(face) = FontRef::new(bytes) else { continue };
             let mut c2g: HashMap<char, u16> = HashMap::new();
             for &(ch, gid) in claims.iter() {
                 c2g.entry(ch).or_insert(gid);
@@ -807,7 +868,7 @@ parola intera : {parole_ok}/{parole} = {pa:.1}% (parola letta esattamente)");
         for (etichetta, mappa) in [("DIRETTA", &subs), ("INVERSA", &inversa)] {
         let (mut pro_ricostruzione, mut pro_estratto, mut incerte) = (0, 0, 0);
         for (bytes, claims) in fonts.iter() {
-            let Ok(face) = ttf_parser::Face::parse(bytes, 0) else { continue };
+            let Ok(face) = FontRef::new(bytes) else { continue };
             let mut c2g: HashMap<char, u16> = HashMap::new();
             for &(ch, gid) in claims.iter() {
                 c2g.entry(ch).or_insert(gid);

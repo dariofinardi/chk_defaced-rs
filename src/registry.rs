@@ -72,6 +72,11 @@ impl FontEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FontRegistry {
+    /// `chk_defaced <versione>` che ha costruito il registro. **Vale come marcatore di
+    /// compatibilita'**: dalla 0.4.0 gli hash degli outline sono calcolati con `skrifa` invece che
+    /// con `ttf-parser`, e i due parser emettono la stessa curva con un numero di punti diverso
+    /// (misurato: 439 glifi latini su 443 divergenti). Un registro costruito prima **non e'
+    /// confrontabile** e va rigenerato con `build-registry`.
     pub tool: String,
     pub source_dir: String,
     pub count: usize,

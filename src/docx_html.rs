@@ -9,6 +9,7 @@
 //! The page is fully inline (fonts as base64 `@font-face`, no external refs) so it is safe under a strict
 //! CSP and works air-gapped. No rendering happens here — only HTML synthesis.
 
+use skrifa::raw::FontRef;
 use std::io::Read;
 use std::path::Path;
 
@@ -297,7 +298,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
 fn first_parseable(raw: &[u8], font_key: &str) -> Option<Vec<u8>> {
     for reversed in [true, false] {
         let de = deobfuscate(raw, font_key, reversed);
-        if ttf_parser::Face::parse(&de, 0).is_ok() {
+        if FontRef::new(&de).is_ok() {
             return Some(de);
         }
     }

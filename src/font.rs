@@ -3,6 +3,11 @@
 //! glyph id), which is the bridge between "extracted character" and "drawn glyph": the heart of the
 //! coherence check.
 
+use skrifa::outline::{DrawSettings, OutlinePen};
+use skrifa::prelude::*;
+use skrifa::raw::{FileRef, FontRef, TableProvider};
+use skrifa::string::StringId;
+use skrifa::{GlyphId, MetadataProvider};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -64,54 +69,41 @@ pub fn parse_file(path: &Path) -> Result<Vec<ParsedFont>> {
 /// Parse every face from the bytes of a font file (handles collections).
 pub fn parse_data(data: &[u8]) -> Vec<ParsedFont> {
     let file_sha = sha256_hex(data);
-    let count = ttf_parser::fonts_in_collection(data).unwrap_or(1).max(1);
+    let count = match FileRef::new(data) {
+        Ok(FileRef::Collection(c)) => c.len(),
+        Ok(FileRef::Font(_)) => 1,
+        Err(_) => return Vec::new(),
+    };
     let mut out = Vec::new();
     for i in 0..count {
-        if let Ok(face) = ttf_parser::Face::parse(data, i) {
+        if let Ok(face) = FontRef::from_index(data, i) {
             out.push(from_face(&face, &file_sha, i));
         }
     }
     out
 }
 
-fn name(face: &ttf_parser::Face, id: u16) -> Option<String> {
-    let names = face.names();
-    for i in 0..names.len() {
-        if let Some(n) = names.get(i) {
-            if n.name_id == id {
-                if let Some(s) = n.to_string() {
-                    let s = s.trim().to_string();
-                    if !s.is_empty() {
-                        return Some(s);
-                    }
-                }
-            }
-        }
-    }
-    None
+fn name(face: &FontRef, id: u16) -> Option<String> {
+    face.localized_strings(StringId::new(id))
+        .map(|s| s.chars().collect::<String>().trim().to_string())
+        .find(|s| !s.is_empty())
 }
 
 /// Extract the richest Unicode cmap (prefers format 12 over format 4 by picking the one with the
 /// most entries).
-fn extract_cmap(face: &ttf_parser::Face) -> BTreeMap<u32, u16> {
-    let mut best: BTreeMap<u32, u16> = BTreeMap::new();
-    if let Some(cmap) = face.tables().cmap {
-        for subtable in cmap.subtables {
-            if !subtable.is_unicode() {
-                continue;
-            }
-            let mut m: BTreeMap<u32, u16> = BTreeMap::new();
-            subtable.codepoints(|cp| {
-                if let Some(g) = subtable.glyph_index(cp) {
-                    m.insert(cp, g.0);
-                }
-            });
-            if m.len() > best.len() {
-                best = m;
-            }
-        }
+fn extract_cmap(face: &FontRef) -> BTreeMap<u32, u16> {
+    // `skrifa` sceglie da se' la mappa Unicode migliore (preferisce la 12 alla 4) ed espone il
+    // risultato gia' fuso: dove `ttf-parser` obbligava a scorrere le sottotabelle e a tenere la piu'
+    // ricca, qui basta enumerare le mappature.
+    let charmap = face.charmap();
+    // `skrifa` **preferisce** la sottotabella simbolica (3,0) quando c'e', mentre il filtro
+    // `is_unicode()` del parser precedente la escludeva. Una cmap simbolica mappa per progetto in
+    // F000-F0FF, cioe' nella PUA: presa per Unicode fa scattare `FONT.PUA_CMAP` su font legittimi.
+    // Misurato: senza questa guardia, un documento pulito su 32 passava a 7 finding High.
+    if charmap.is_symbol() {
+        return BTreeMap::new();
     }
-    best
+    charmap.mappings().map(|(cp, gid)| (cp, gid.to_u32() as u16)).collect()
 }
 
 fn cmap_hash(cmap: &BTreeMap<u32, u16>) -> String {
@@ -129,10 +121,12 @@ fn cmap_hash(cmap: &BTreeMap<u32, u16>) -> String {
 struct OutlineSig {
     h: u64,
     empty: bool,
+    start: Option<(f32, f32)>,
+    cur: Option<(f32, f32)>,
 }
 impl OutlineSig {
     fn new() -> Self {
-        Self { h: 0xcbf29ce484222325, empty: true }
+        Self { h: 0xcbf29ce484222325, empty: true, start: None, cur: None }
     }
     fn mix(&mut self, v: i64) {
         self.empty = false;
@@ -140,44 +134,59 @@ impl OutlineSig {
         self.h = self.h.wrapping_mul(0x100000001b3);
     }
 }
-impl ttf_parser::OutlineBuilder for OutlineSig {
+impl OutlinePen for OutlineSig {
     fn move_to(&mut self, x: f32, y: f32) {
+        self.start = Some((x, y));
+        self.cur = Some((x, y));
         self.mix(1);
         self.mix(x as i64);
         self.mix(y as i64);
     }
     fn line_to(&mut self, x: f32, y: f32) {
+        self.cur = Some((x, y));
         self.mix(2);
         self.mix(x as i64);
         self.mix(y as i64);
     }
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        self.cur = Some((x, y));
         self.mix(3);
         for v in [x1, y1, x, y] {
             self.mix(v as i64);
         }
     }
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.cur = Some((x, y));
         self.mix(4);
         for v in [x1, y1, x2, y2, x, y] {
             self.mix(v as i64);
         }
     }
     fn close(&mut self) {
+        // Chiusura esplicita: `skrifa` chiude implicitamente il contorno, altri parser emettono
+        // prima una linea di ritorno al punto iniziale. Normalizzarla qui rende la firma
+        // indipendente dalla convenzione di chi disegna — misurato: senza, il 79% degli hash
+        // cambia solo per questo.
+        if let (Some(s), Some(c)) = (self.start, self.cur) {
+            if s != c {
+                self.line_to(s.0, s.1);
+            }
+        }
         self.mix(5);
     }
 }
 
 /// FNV-1a hash of the glyph `gid`'s outline, or `None` for an empty/space glyph. Shared by the
 /// registry builder and the canonical check so the hashes are directly comparable.
-pub(crate) fn glyph_outline_hash(face: &ttf_parser::Face, gid: u16) -> Option<u64> {
+pub(crate) fn glyph_outline_hash(face: &FontRef, gid: u16) -> Option<u64> {
     let mut b = OutlineSig::new();
-    face.outline_glyph(ttf_parser::GlyphId(gid), &mut b)?;
+    let glyph = face.outline_glyphs().get(GlyphId::from(gid))?;
+    glyph.draw(DrawSettings::unhinted(Size::unscaled(), LocationRef::default()), &mut b).ok()?;
     (!b.empty).then_some(b.h)
 }
 
 /// Outline hashes for the Latin letters in the cmap (the v1.0 scope), keyed by codepoint.
-fn extract_outlines(face: &ttf_parser::Face, cmap: &BTreeMap<u32, u16>) -> BTreeMap<u32, u64> {
+fn extract_outlines(face: &FontRef, cmap: &BTreeMap<u32, u16>) -> BTreeMap<u32, u64> {
     use unicode_script::{Script, UnicodeScript};
     cmap.iter()
         .filter(|(cp, _)| {
@@ -187,7 +196,7 @@ fn extract_outlines(face: &ttf_parser::Face, cmap: &BTreeMap<u32, u16>) -> BTree
         .collect()
 }
 
-fn from_face(face: &ttf_parser::Face, file_sha: &str, index: u32) -> ParsedFont {
+fn from_face(face: &FontRef, file_sha: &str, index: u32) -> ParsedFont {
     // name_id: 0 copyright, 1 family, 2 subfamily, 4 full, 5 version, 6 postscript, 8 manufacturer
     let cmap = extract_cmap(face);
     let cmap_sha256 = cmap_hash(&cmap);
@@ -200,8 +209,8 @@ fn from_face(face: &ttf_parser::Face, file_sha: &str, index: u32) -> ParsedFont 
         version: name(face, 5),
         copyright: name(face, 0),
         manufacturer: name(face, 8),
-        num_glyphs: face.number_of_glyphs(),
-        units_per_em: face.units_per_em(),
+        num_glyphs: face.maxp().map(|m| m.num_glyphs()).unwrap_or(0),
+        units_per_em: face.head().map(|h| h.units_per_em()).unwrap_or(0),
         cmap,
         outlines,
         cmap_sha256,

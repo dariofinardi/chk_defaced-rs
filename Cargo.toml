@@ -1,6 +1,6 @@
 [package]
 name = "chk_defaced"
-version = "0.3.3"
+version = "0.4.0"
 # Misurata, non stimata: con 1.86 cargo rifiuta l'albero perche' lopdf 0.44 richiede 1.88
 # (e con lui time, time-core, weezl). Verificata compilando e testando con quella toolchain.
 rust-version = "1.88"
@@ -79,7 +79,9 @@ required-features = ["render-wry"]
 
 [dependencies]
 # Fonts (pure Rust, MIT/Apache)
-ttf-parser = "0.25"
+#  (progetto fontations di Google Fonts) al posto di ttf-parser, che l'advisory
+# RUSTSEC-2026-0192 dichiara non piu' mantenuto.
+skrifa     = "0.46"
 sha2       = "0.10"
 # Unicode TR39 confusables: distinguishes real glyph substitutions from legitimate cross-script
 # homoglyphs (Latin 'A' vs Greek 'Α') in the outline detectors.

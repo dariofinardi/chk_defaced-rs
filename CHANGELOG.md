@@ -4,7 +4,44 @@ Formato ispirato a [Keep a Changelog](https://keepachangelog.com/it/1.1.0/); il 
 [SemVer](https://semver.org/lang/it/) con la convenzione dello 0.x, dove **il minor segnala una
 rottura**. Le versioni precedenti alla 0.3.0 sono ricostruibili dalla storia git.
 
-## [0.3.3] — non ancora rilasciata
+## [0.4.0] — non ancora rilasciata
+
+### ROTTURA: i registri vanno rigenerati
+
+Gli hash degli outline sono ora calcolati con **`skrifa`** invece che con `ttf-parser`. I due parser
+emettono la stessa curva con un **numero di punti diverso**: misurato sulle lettere latine di sei
+font di sistema, 439 glifi su 443 divergenti hanno lunghezza diversa della sequenza. Non è un offset
+normalizzabile.
+
+**Un registro costruito con una versione precedente non è confrontabile** e produce risultati
+sbagliati, non un errore. Va rigenerato con `build-registry`. Il campo `tool` del registro dice con
+quale versione è stato costruito.
+
+Il rilevamento **in-documento** non è toccato: confronta hash calcolati nella stessa esecuzione,
+quindi resta coerente con sé stesso. A rompersi è solo il percorso `--registry`.
+
+### Modificato
+
+- `ttf-parser` → **`skrifa` 0.46** (progetto *fontations* di Google Fonts). Motivo:
+  **RUSTSEC-2026-0192**, `ttf-parser` non è più mantenuto, ed era l'unica segnalazione nel grafo di
+  default. Ora non c'è più.
+- La firma dell'outline normalizza la **chiusura del contorno**: alcuni parser emettono una linea
+  esplicita di ritorno al punto iniziale prima di `close`, `skrifa` chiude implicitamente. Senza
+  questa normalizzazione il 79% degli hash cambiava per la sola convenzione di disegno.
+- `extract_cmap` **scarta le cmap simboliche**. `skrifa` preferisce la sottotabella (3,0) quando
+  c'è, mentre il filtro precedente la escludeva; una cmap simbolica mappa per progetto in F000-F0FF,
+  cioè nella PUA, e presa per Unicode faceva scattare `FONT.PUA_CMAP` su font legittimi. Misurato:
+  senza la guardia, un documento pulito su 32 passava da `ok` a 7 finding `High`.
+- La bbox del glifo è **misurata dal tracciato**: `skrifa` non espone `glyph_bounding_box`. È anche
+  più fedele della bbox dichiarata nell'header, che può essere larga o sbagliata.
+
+### Verifica
+
+Comportamento **identico** al parser precedente su tutti i corpus: 9/10 documenti d'attacco
+segnalati con 24 `High`, 0/32 sul corpus pulito, 0/16 e 0/7 sui corpus a valle. Nessun documento
+cambia esito. 61 test verdi, clippy e `cargo doc` senza warning.
+
+## [0.3.3] — 2026-08-28
 
 Pulizia delle cose rimaste in sospeso, e una catena che si chiude da sé.
 
